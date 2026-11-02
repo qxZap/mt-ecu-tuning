@@ -1271,10 +1271,10 @@ static void keepLoaded() {
 
 static void tick(void*) {
     // shortcut: finds the freezes a few seconds into a world. Remove once they are explained.
-    static DWORD lastTick;
+    static DWORD hitchFrom;
     DWORD stamp = GetTickCount();
-    if (lastTick && stamp - lastTick > 150 && loggingOn()) MT_LOG("hitch %lu ms", stamp - lastTick);
-    lastTick = stamp;
+    if (hitchFrom && stamp - hitchFrom > 150 && loggingOn()) MT_LOG("hitch %lu ms", stamp - hitchFrom);
+    hitchFrom = stamp;
     InterlockedExchange(&queued, 0);
     keepLoaded();
     std::lock_guard<std::mutex> g(lock);
