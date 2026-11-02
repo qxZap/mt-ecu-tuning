@@ -156,6 +156,7 @@ static uintptr_t fCreate, fAddChild, fChildIndex, fChildAt, fChildCount, fToText
 static uintptr_t sound, cone, ball, glow, smoke, playerNow;
 static uintptr_t cMeshComp, fAddComp, fFinish, fMobility, fMesh, fCollision, fShadow, fMakeMid, fMidColor, fMidScalar, fRelLoc, fMeshVis;
 static bool canFlame = true, canGlow = true, canEcu = true;
+static bool whineIsOurs;
 static uintptr_t fSetSound, fIsServer, whistle, fWhinePitch, fWhineVolume, fWhineIsOn, fWhinePlay, fWhineStop;
 static int oFuelType = -1, oBrake = -1, oPedal = -1, oTurbineSpeed = -1;
 static uintptr_t waves[6];
@@ -924,12 +925,15 @@ static void tickWhine(uintptr_t v, Car& car, float pedal, double ratio, uintptr_
     if ((int)(now - car.whineAt) < 0) return;
     car.whineAt = now + 50;
     if (!whistle) {
-        // Teh's Hellcat at the top of its revs, which is nearly all blower. His pack is optional:
-        // without it there is simply no whine, and asking is a blocking load so it stops.
+        // Our own blower, in MoreTuning: a synthesized seamless loop. Failing that Teh's Hellcat at
+        // the top of its revs, nearly all blower. Neither is required: without them there is no
+        // whine, and asking is a blocking load so it stops.
         static int whineTries;
         if (whineTries >= 3) return;
         whineTries++;
-        whistle = loadAsset(L"/Game/Cars/Parts/Engine/Sound/hellcatv8/hellcathigh.hellcathigh");
+        whistle = loadAsset(L"/Game/MoreTuning/Sounds/SW_QX_BlowerWhine.SW_QX_BlowerWhine");
+        whineIsOurs = whistle != 0;
+        if (!whistle) whistle = loadAsset(L"/Game/Cars/Parts/Engine/Sound/hellcatv8/hellcathigh.hellcathigh");
         flutterRoom = loadAsset(L"/Game/Sounds/EngineSoundAttenuation.EngineSoundAttenuation");
         MT_LOG("supercharger whine %s", whistle ? "loaded" : "NOT LOADED");
         if (!whistle) return;
@@ -938,11 +942,13 @@ static void tickWhine(uintptr_t v, Car& car, float pedal, double ratio, uintptr_
         uintptr_t audio = spawnKept(v, whistle, 0.001f, 1);
         if (!audio) return;
         car.whine = refOf(audio);
-        // The rumble under it is the V8. Taking that off leaves the whine for any engine.
-        unsigned char filter[8] = {1};
-        float above = 1400;
-        api->process_event(audio, fHighOn, filter);
-        api->process_event(audio, fHighHz, &above);
+        // The rumble under Teh's clip is the V8. Taking that off leaves the whine for any engine.
+        if (!whineIsOurs) {
+            unsigned char filter[8] = {1};
+            float above = 1400;
+            api->process_event(audio, fHighOn, filter);
+            api->process_event(audio, fHighHz, &above);
+        }
         MT_LOG("supercharger on %s, stage %d, sound %s", objName(classOf(v)).c_str(), car.blower, objName(whistle).c_str());
     }
     // Belt driven, so the revs alone set it: next to nothing at idle, climbing to full at the limiter.
@@ -1272,7 +1278,7 @@ static void keepLoaded() {
         {&glow, L"/Game/Cars/Materials/M_AttachmentLight.M_AttachmentLight"},
         {&flutterShot, L"/Game/Sounds/Vehicle/Intake/QX_Flutter_Shot.QX_Flutter_Shot"},
         {&flutterRoom, L"/Game/Sounds/EngineSoundAttenuation.EngineSoundAttenuation"},
-        {&whistle, L"/Game/Cars/Parts/Engine/Sound/hellcatv8/hellcathigh.hellcathigh"},
+        {&whistle, L"/Game/MoreTuning/Sounds/SW_QX_BlowerWhine.SW_QX_BlowerWhine"},
         {&waves[0], L"/Game/Cars/Parts/Engine/Sound/Backfire/Backfire_01.Backfire_01"},
         {&waves[1], L"/Game/Cars/Parts/Engine/Sound/Backfire/Backfire_02.Backfire_02"},
         {&waves[2], L"/Game/Cars/Parts/Engine/Sound/Backfire/Backfire_03.Backfire_03"},
