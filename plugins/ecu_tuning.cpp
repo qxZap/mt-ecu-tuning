@@ -63,22 +63,23 @@ struct Slot { Ref owner; Pipe pipe; Vec dir, r1, r2; Ref cone[2], light; uintptr
 struct Voice { Ref owner; DWORD at; float pitch, volume, lowpass, highpass; };
 struct Flutter { double pitch, low, high, volume; int shots; DWORD gap; int turbos; };
 struct Trim { float base, wrote; bool set; };
-struct Car { DWORD flutterAt = 0, ecuAt = 0, bangAt = 0, alsUntil = 0, liftAt = 0; bool lagging = false, host = false, pedalSeen = false, armed = false; Trim trim[13] = {}; Ref whine = {}; DWORD whineCheck = 0, whineAt = 0; int blower = -1; bool whineNear = false; float whineLevel = 0; float rpm = 0, fuel = 0, spool = 0; DWORD next = 0; bool read = false; std::vector<Pipe> pipes; std::vector<Slot> slots; std::vector<Ref> smokes; };
+struct Car { DWORD flutterAt = 0, ecuAt = 0, bangAt = 0, alsUntil = 0, liftAt = 0; bool lagging = false, host = false, pedalSeen = false, armed = false; Trim trim[14] = {}; Ref whine = {}, self = {}, voice[8] = {}; uintptr_t voiceSound[8] = {}; int nextVoice = 0; DWORD whineCheck = 0, whineAt = 0; int blower = -1; bool whineNear = false; float whineLevel = 0; float rpm = 0, fuel = 0, spool = 0; DWORD next = 0; bool read = false; std::vector<Pipe> pipes; std::vector<Slot> slots; std::vector<Ref> smokes; };
 struct FStr { const wchar_t* data; int num, max; };
-struct Tune { double on, pops, revs, volume, flames, length, size, dpf, smoke, lasts, spread, chance, bang, timing, fuel, boost, lag, lagRevs, flameRevs; bool own; };
+struct Tune { double on, pops, revs, volume, flames, length, size, dpf, smoke, lasts, spread, chance, bang, timing, fuel, boost, lag, lagRevs, flameRevs, cool; bool own; };
 
 static const struct { const wchar_t* key; double Tune::*field; } KEYS[] = {
     {L"Enabled", &Tune::on}, {L"PopRate", &Tune::pops}, {L"MinRevs", &Tune::revs}, {L"PopVolume", &Tune::volume},
     {L"Flames", &Tune::flames}, {L"FlameLength", &Tune::length}, {L"FlameSize", &Tune::size},
     {L"DPFDelete", &Tune::dpf}, {L"SmokeAmount", &Tune::smoke}, {L"SmokeLasts", &Tune::lasts}, {L"FlameWidth", &Tune::spread},
     {L"BackfireChance", &Tune::chance}, {L"BangChance", &Tune::bang},
-    {L"Timing", &Tune::timing}, {L"FuelMap", &Tune::fuel}, {L"Boost", &Tune::boost}, {L"AntiLag", &Tune::lag}, {L"AntiLagRevs", &Tune::lagRevs}, {L"FlameRevs", &Tune::flameRevs}};
+    {L"Timing", &Tune::timing}, {L"FuelMap", &Tune::fuel}, {L"Boost", &Tune::boost}, {L"AntiLag", &Tune::lag}, {L"AntiLagRevs", &Tune::lagRevs}, {L"FlameRevs", &Tune::flameRevs}, {L"CoolingBoost", &Tune::cool}};
 enum { TOGGLE, SLIDER, REAL };
 enum { BURNS = 1, POPS_ = 2, DIESEL = 4, TURBO = 8 };  // what a row needs from the engine
 // A slider always reads 0 to 1 and maps onto min..max. Timing, fuel and boost have stock at 0.50.
 static const struct { const wchar_t* label; double Tune::*field; float min, max; int kind, needs; } ROWS[] = {
     {L"Ignition timing", &Tune::timing, 0, 1, SLIDER, BURNS},
     {L"Fuel map", &Tune::fuel, 0, 1, SLIDER, BURNS},
+    {L"Cooling boost", &Tune::cool, 0, 1, SLIDER, BURNS},
     {L"Boost pressure", &Tune::boost, 0, 1, SLIDER, TURBO},
     {L"Anti-lag", &Tune::lag, 0, 1, TOGGLE, TURBO},
     {L"Anti-lag starts at share of rev limit", &Tune::lagRevs, 0.1f, 0.9f, REAL, TURBO},
@@ -96,7 +97,7 @@ static const struct { const wchar_t* label; double Tune::*field; float min, max;
     {L"DPF delete", &Tune::dpf, 0, 1, TOGGLE, DIESEL},
     {L"Smoke amount", &Tune::smoke, 0, 5, SLIDER, DIESEL},
     {L"Smoke lasts, times normal", &Tune::lasts, 1, 5, REAL, DIESEL}};
-enum { NROWS = 19 };
+enum { NROWS = 20 };
 
 static bool scaled(int i) { return ROWS[i].kind == SLIDER; }
 static float stepOf(int i) { return scaled(i) ? 0.01f : ROWS[i].kind == TOGGLE || ROWS[i].max >= 10 ? 1 : ROWS[i].max >= 5 ? 0.1f : 0.01f; }
@@ -155,10 +156,10 @@ static uintptr_t fCreate, fAddChild, fChildIndex, fChildAt, fChildCount, fToText
 static uintptr_t sound, cone, ball, glow, smoke, playerNow;
 static uintptr_t cMeshComp, fAddComp, fFinish, fMobility, fMesh, fCollision, fShadow, fMakeMid, fMidColor, fMidScalar, fRelLoc, fMeshVis;
 static bool canFlame = true, canGlow = true, canEcu = true;
-static uintptr_t fIsServer, whistle, fWhinePitch, fWhineVolume, fWhineIsOn, fWhinePlay, fWhineStop;
+static uintptr_t fSetSound, fIsServer, whistle, fWhinePitch, fWhineVolume, fWhineIsOn, fWhinePlay, fWhineStop;
 static int oFuelType = -1, oBrake = -1, oPedal = -1, oTurbineSpeed = -1;
 static uintptr_t waves[6];
-static int oTrim[13];
+static int oTrim[14];
 static uintptr_t cLight, fIntensity, fLightColor, fLightRadius, fLightShadows, fLightUnits;
 static int oRelLocAt, oRelRotAt, oTurbo = -1, oParts = -1, oPartKey = -1, oPartSlot = -1, partSize = 0;
 static uintptr_t lastMid, fRelRot, fFlutter, fLowOn, fLowHz, fHighOn, fHighHz, flutterShot, flutterRoom;
@@ -174,6 +175,7 @@ static int pPathIn, pPathRet, pRefIn, pRefRet, pLoadIn, pLoadRet, pNameIn, pName
 static int pCtx, pSound, pAt, pVolume, pPitch, pSystem, pAttach, pDestroy, pActivate, pSpawnRet;
 
 static bool alive(const Ref& r) { return r.ptr && api->object(r.index) == r.ptr; }
+static bool dying(uintptr_t o) { return (get<uint32_t>(o + L().obj_flags) & 0x18000) != 0; }  // RF_BeginDestroyed | RF_FinishDestroyed
 static double roll() { return rand() / (double)RAND_MAX; }
 static FStr str(const wchar_t* s) { int n = (int)wcslen(s) + 1; return {s, n, n}; }
 
@@ -436,7 +438,7 @@ static void flame(uintptr_t v, Car& car, int i, const Tune& t, double energy, do
     s.flash = flash;
     if (s.sparks.empty()) s.sparks.resize(v == playerNow ? 14 : 3);
     s.style = style;
-    s.spread = t.spread * (style == 2 ? 1.8 : 1);
+    s.spread = 1.5 * t.spread * (style == 2 ? 1.8 : 1);
     s.energy = energy;
     if (!s.on) {  // a new burst gets its own noise, so no two are alike
         s.swirl = roll() * 6.2831853;
@@ -447,7 +449,7 @@ static void flame(uintptr_t v, Car& car, int i, const Tune& t, double energy, do
         if (!alive(s.cone[c])) { s.cone[c] = refOf(makeMesh(v, cone, pipe, 1, 0.5f, 0.1f)); s.coneMid[c] = lastMid; }
     s.glow = canGlow;
     if (s.glow > 0 && !alive(s.light)) s.light = refOf(makeLight(v, 200 + 1500 * s.size));
-    s.coneLength = s.size * 1.6 * (0.75 + 0.5 * roll());
+    s.coneLength = s.size * 2.16 * (0.75 + 0.5 * roll());
     s.start = now;
     s.end = now + (DWORD)(seconds * 1000 < 34 ? 34 : seconds * 1000);
     if (seconds < 0.05 && !s.on && style != 1) s.debt = 12;
@@ -477,7 +479,7 @@ static void heatColor(uintptr_t mid, double x) {
 
 static void launch(Slot& s, Spark& p, int kind, double seconds) {
     static const double WIDTH[3] = {0.08, 0.12, 0.2}, LENGTH[3] = {1.6, 2, 1.2}, LIFE[3] = {0.05, 0.07, 0.1}, SPREAD[3] = {0.03, 0.05, 0.11}, PACE[3] = {1, 1, 0.55};
-    double speed = s.size * 2400 * (0.7 + 0.6 * roll()) * (0.8 + 0.4 * s.energy) * PACE[kind];
+    double speed = s.size * 3240 * (0.7 + 0.6 * roll()) * (0.8 + 0.4 * s.energy) * PACE[kind];
     // Slow noise, sines at unrelated rates with this burst's phases: it moves a hot spot round the
     // circle and breathes it in and out, so the shape keeps changing and never repeats.
     double noise = (sin(seconds * 7.3 + s.phase[0]) + sin(seconds * 11.9 + s.phase[1]) + sin(seconds * 19.1 + s.phase[2])) / 3;
@@ -610,6 +612,8 @@ static const Shot BANGS[6] = {
     {0.9, 0.15, 2, 3, 70, 1, 0.5, 1, 1.5, 2},         // burst
     {0.42, 0.04, 5, 3, 0, 1, 1.3, 1.3, 2.2, 2}};      // thunder
 
+static void playOn(uintptr_t v, Car& car, uintptr_t snd, float volume, float pitch, float lowpass, float highpass);
+
 struct Fired { Ref owner; DWORD at; float volume, pitch; double flame, seconds, size, flash, energy, ratio; int style; bool everyPipe; };
 static std::vector<Fired> fired;
 
@@ -634,20 +638,12 @@ static void tickFired(DWORD now) {
         uintptr_t v = x.owner.ptr;
         Car& car = known->second;
         const Tune& t = tuneOf(get<int64_t>(v + oId));
-        Vec at = callVec(v, fLoc);
-        unsigned char p[0xa0] = {0};
-        memcpy(p + pCtx, &v, 8);
         uintptr_t wave = waves[rand() % 6];
-        if (!wave) wave = sound;
-        memcpy(p + pSound, &wave, 8);
-        memcpy(p + pAt, &at, sizeof at);
-        memcpy(p + pVolume, &x.volume, 4);
-        memcpy(p + pPitch, &x.pitch, 4);
-        api->process_event(gameplayCDO, fSound, p);
+        playOn(v, car, wave ? wave : sound, x.volume, x.pitch, 20000, 0);
         if (t.flames == 0 || car.pipes.empty() || x.ratio < t.flameRevs || roll() >= x.flame) continue;
         // A retarded or rich map burns in the pipe, and no two are quite the same length.
-        double seconds = 2 * t.length * x.seconds * (0.5 + 0.5 * x.energy) * (1 + unburnt(t)) * (0.6 + 0.8 * roll());
-        if (seconds > 0.36) seconds = 0.36;
+        double seconds = 2.7 * t.length * x.seconds * (0.5 + 0.5 * x.energy) * (1 + unburnt(t)) * (0.6 + 0.8 * roll());
+        if (seconds > 0.49) seconds = 0.49;
         if (x.everyPipe) for (int i2 = 0; i2 < (int)car.pipes.size(); i2++) flame(v, car, i2, t, x.energy, seconds, x.size, x.flash, x.style);
         else flame(v, car, rand() % (int)car.pipes.size(), t, x.energy, seconds, x.size, x.flash, x.style);
     }
@@ -734,6 +730,66 @@ static std::string fittedPart(uintptr_t v, int slot) {
 
 static int flutterTries, flutterLogged;
 
+static uintptr_t spawnKept(uintptr_t v, uintptr_t sound_, float volume, float pitch) {
+    uintptr_t root = rootOf(v);
+    unsigned char q[0xc0] = {0};
+    memcpy(q + off(fFlutter, "Sound"), &sound_, 8);
+    memcpy(q + off(fFlutter, "AttachToComponent"), &root, 8);
+    memcpy(q + off(fFlutter, "VolumeMultiplier"), &volume, 4);
+    memcpy(q + off(fFlutter, "PitchMultiplier"), &pitch, 4);
+    memcpy(q + off(fFlutter, "AttenuationSettings"), &flutterRoom, 8);
+    int stops = off(fFlutter, "bStopWhenAttachedToDestroyed");
+    if (stops >= 0) q[stops] = 1;
+    api->process_event(gameplayCDO, fFlutter, q);
+    uintptr_t audio = 0;
+    memcpy(&audio, q + off(fFlutter, "ReturnValue"), 8);
+    return audio;
+}
+
+// Every shot used to spawn a component: thousands of objects for the collector, each one a chance
+// to hand the audio thread something half destroyed. A car keeps a fixed set and reuses them;
+// they ride on the car, so other players' cars are placed in 3D like the player's.
+static void playOn(uintptr_t v, Car& car, uintptr_t snd, float volume, float pitch, float lowpass, float highpass) {
+    if (!snd || !fSetSound || !fWhinePitch || !fWhineVolume || !fWhinePlay) return;
+    int i = car.nextVoice++ % (v == playerNow ? 8 : 2);
+    Ref& r = car.voice[i];
+    if (!alive(r) || dying(r.ptr)) {
+        uintptr_t audio = spawnKept(v, snd, 0.001f, 1);
+        if (!audio) return;
+        if (fWhineStop) api->process_event(audio, fWhineStop, nullptr);
+        r = refOf(audio);
+        car.voiceSound[i] = snd;
+    }
+    if (car.voiceSound[i] != snd) {
+        unsigned char q[0x10] = {0};
+        memcpy(q, &snd, 8);
+        api->process_event(r.ptr, fSetSound, q);
+        car.voiceSound[i] = snd;
+    }
+    unsigned char low[8] = {(unsigned char)(lowpass < 20000)}, high[8] = {(unsigned char)(highpass > 0)};
+    api->process_event(r.ptr, fLowOn, low);
+    if (low[0]) api->process_event(r.ptr, fLowHz, &lowpass);
+    api->process_event(r.ptr, fHighOn, high);
+    if (high[0]) api->process_event(r.ptr, fHighHz, &highpass);
+    api->process_event(r.ptr, fWhinePitch, &pitch);
+    api->process_event(r.ptr, fWhineVolume, &volume);
+    float from = 0;
+    api->process_event(r.ptr, fWhinePlay, &from);
+}
+
+// A sound played from a plugin is only referenced while it plays, so the game collects it and
+// the next play can reach the audio thread half destroyed. A silent stopped component on the car
+// is a real reference; if the car goes, the dying() check covers the gap until the next one.
+static Ref flutterHeld;
+
+static void holdFlutter(uintptr_t v) {
+    if (alive(flutterHeld) && !dying(flutterHeld.ptr)) return;
+    uintptr_t audio = spawnKept(v, flutterShot, 0.001f, 1);
+    if (!audio) return;
+    if (fWhineStop) api->process_event(audio, fWhineStop, nullptr);
+    flutterHeld = refOf(audio);
+}
+
 static void queueFlutter(uintptr_t v, const Tune& t, double push, DWORD now) {
     if (!canFlutter) return;
     std::string key = fittedPart(v, 7);  // EMTVehiclePartSlot::Turbocharger
@@ -764,6 +820,7 @@ static void queueFlutter(uintptr_t v, const Tune& t, double push, DWORD now) {
         MT_LOG("flutter try %d: %s, place %d, attenuation %d", flutterTries, flutterShot ? "loaded" : "NOT LOADED", found, flutterRoom != 0);
         if (!flutterShot) return;
     }
+    holdFlutter(v);
     Flutter f = flutterOf(key);
     for (int voice = 0; voice < f.turbos; voice++) {
         double detune = 1 + voice * 0.035 * (voice % 2 ? 1 : -1);
@@ -788,35 +845,14 @@ static void tickVoices(DWORD now) {
         Voice x = voices[i];
         if ((int)(now - x.at) < 0) { i++; continue; }
         voices.erase(voices.begin() + i);
-        if (!alive(x.owner)) continue;
-        uintptr_t root = rootOf(x.owner.ptr);
-        unsigned char p[0xc0] = {0};
-        memcpy(p + off(fFlutter, "Sound"), &flutterShot, 8);
-        memcpy(p + off(fFlutter, "AttachToComponent"), &root, 8);
-        memcpy(p + off(fFlutter, "VolumeMultiplier"), &x.volume, 4);
-        memcpy(p + off(fFlutter, "PitchMultiplier"), &x.pitch, 4);
-        memcpy(p + off(fFlutter, "AttenuationSettings"), &flutterRoom, 8);
-        p[off(fFlutter, "bAutoDestroy")] = 1;
-        api->process_event(gameplayCDO, fFlutter, p);
-        uintptr_t audio = 0;
-        memcpy(&audio, p + off(fFlutter, "ReturnValue"), 8);
-        if (!audio) continue;
-        if (x.lowpass < 20000) {
-            unsigned char on[8] = {1};
-            api->process_event(audio, fLowOn, on);
-            api->process_event(audio, fLowHz, &x.lowpass);
-        }
-        if (x.highpass > 0) {
-            unsigned char on[8] = {1};
-            api->process_event(audio, fHighOn, on);
-            api->process_event(audio, fHighHz, &x.highpass);
-        }
+        auto known = cars.find(x.owner.ptr);
+        if (!alive(x.owner) || !flutterShot || known == cars.end()) continue;
+        playOn(x.owner.ptr, known->second, flutterShot, x.volume, x.pitch, x.lowpass, x.highpass);
     }
 }
 
 static int engineHas(uintptr_t vehicle);
 
-// A part swap rewrites these, so a value that is not what was last written is the new base.
 static void tuneEngine(uintptr_t v, uintptr_t engine, Car& car, const Tune& t, DWORD now) {
     if (!canEcu || (int)(now - car.ecuAt) < 0) return;
     car.ecuAt = now + 500;
@@ -832,13 +868,13 @@ static void tuneEngine(uintptr_t v, uintptr_t engine, Car& car, const Tune& t, D
     double burn = 1 + 0.35 * (f > 0 ? f : 0) - 0.1 * (f < 0 ? -f : 0) + 0.2 * (b > 0 ? b : 0);
     bool als = host && car.lagging;
     if (als) { heat *= 1.15; burn *= 1.25; }
-    double scale[13] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 + 0.08 * a};
+    double scale[14] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 + 0.08 * a, host ? 1 + 2 * t.cool : 1};
     for (int fuel = 0; fuel < 2; fuel++) {
         scale[fuel * 6] = torque; scale[fuel * 6 + 1] = torque * (1 + 0.25 * b);
         scale[fuel * 6 + 2] = heat; scale[fuel * 6 + 3] = burn; scale[fuel * 6 + 4] = als ? 0.5 : 1;
         scale[fuel * 6 + 5] = 1 + 0.35 * b;  // BoostBar is this times the turbine speed
     }
-    for (int i = 0; i < 13; i++) {
+    for (int i = 0; i < 14; i++) {
         Trim& x = car.trim[i];
         float now2 = get<float>(engine + oTrim[i]);
         if (!x.set || fabs(now2 - x.wrote) > 0.0001f) { x.base = now2; x.set = true; }
@@ -877,19 +913,7 @@ static void tickWhine(uintptr_t v, Car& car, float pedal, double ratio, uintptr_
         if (!whistle) return;
     }
     if (!alive(car.whine)) {
-        uintptr_t root = rootOf(v);
-        float quiet = 0.001f, one = 1;
-        unsigned char q[0xc0] = {0};
-        memcpy(q + off(fFlutter, "Sound"), &whistle, 8);
-        memcpy(q + off(fFlutter, "AttachToComponent"), &root, 8);
-        memcpy(q + off(fFlutter, "VolumeMultiplier"), &quiet, 4);
-        memcpy(q + off(fFlutter, "PitchMultiplier"), &one, 4);
-        memcpy(q + off(fFlutter, "AttenuationSettings"), &flutterRoom, 8);
-        int stops = off(fFlutter, "bStopWhenAttachedToDestroyed");
-        if (stops >= 0) q[stops] = 1;
-        api->process_event(gameplayCDO, fFlutter, q);
-        uintptr_t audio = 0;
-        memcpy(&audio, q + off(fFlutter, "ReturnValue"), 8);
+        uintptr_t audio = spawnKept(v, whistle, 0.001f, 1);
         if (!audio) return;
         car.whine = refOf(audio);
         // The rumble under it is the V8. Taking that off leaves the whine for any engine.
@@ -923,6 +947,7 @@ static void one(uintptr_t v, uintptr_t pawn, const Vec& me, double dt, DWORD now
 
     const Tune& t = tuneOf(get<int64_t>(v + oId));
     Car& car = cars[v];
+    car.self = refOf(v);
     tuneEngine(v, engine, car, t, now);
     float rpm = get<float>(engine + oHot + oRpm), throttle = get<float>(engine + oHot + oThrottle);
     // The engine's own throttle drops at the limiter and on every shift. Only the pedal is a lift.
@@ -957,15 +982,17 @@ static void one(uintptr_t v, uintptr_t pawn, const Vec& me, double dt, DWORD now
         car.armed = false;
         car.liftAt = now;
         // Mostly the turbine, and the revs so a high-rev lift is always the loud one.
-        double push = 0.6 * speed + 0.4 * ratio * ratio;
+        double push = 0.6 * (speed > 1 ? 1 : speed) + 0.4 * ratio * ratio;  // the turbine reads past 1
         car.bangAt = roll() < t.bang ? now + 40 + rand() % 300 : 0;  // the dice are per lift, nothing to do with pops
         if (v == playerNow && flutterLogged < 300) {
             flutterLogged++;
             MT_LOG("lift: revs %.2f turbine %.2f push %.2f turbo %d anti-lag %d", ratio, speed, push, turbo, lagging);
         }
-        if (turbo && push > 0.2 && ratio > 0.3 && (int)(now - car.flutterAt) >= 0 && inRange(v, pawn, me)) {
-            car.flutterAt = now + 400;
-            queueFlutter(v, t, push > 1 ? 1 : push, now);
+        // Only an engine that revs flutters: a truck diesel tops out too low to hear it, and a lift
+        // from low in the range has nothing built up to dump.
+        if (turbo && maxRpm >= 4000 && push > 0.45 && ratio >= 0.5 && (int)(now - car.flutterAt) >= 0 && inRange(v, pawn, me)) {
+            car.flutterAt = now + 1500;
+            queueFlutter(v, t, push * (0.35 + 1.3 * (ratio - 0.5)), now);  // quiet just over half revs, full at the limiter
         }
     }
     car.fuel = pedal > car.fuel ? pedal : car.fuel * (float)(1 - (dt > 0.05 ? 0.05 : dt));  // fades over a second or so
@@ -997,6 +1024,7 @@ static void one(uintptr_t v, uintptr_t pawn, const Vec& me, double dt, DWORD now
             swprintf_s(path, L"/Game/Cars/Parts/Engine/Sound/Backfire/Backfire_0%d.Backfire_0%d", w + 1, w + 1);
             waves[w] = loadAsset(path);
         }
+        if (!flutterRoom) flutterRoom = loadAsset(L"/Game/Sounds/EngineSoundAttenuation.EngineSoundAttenuation");
         MT_LOG("sound %s, cone %d, sphere %d, glow %d", sound ? objName(sound).c_str() : "NOT LOADED", cone != 0, ball != 0, glow != 0);
         if (!sound) return;
     }
@@ -1184,7 +1212,8 @@ static void tickPanel(DWORD now) {
         }
         for (int i = 0; spinRange && i < NROWS; i++) {
             float v = get<float>(panel.rows[i].spin + oSpinValue);
-            if (fabs(v - toSpin(i, t)) < 0.002) continue;
+            // Held at the end of its range the spin box keeps writing its own step count over the row.
+            if (fabs(v - toSpin(i, t)) < 0.002) { showRow(i, t); continue; }
             t.*ROWS[i].field = fromUi(i, fromSpin(i, v, t));
             t.own = true;
             panel.dirty = now;
@@ -1233,7 +1262,7 @@ static void keepLoaded() {
         if (!*h.ptr) continue;
         // Forget it and let the next use load it: the game collects these every minute, and a
         // load here on every collection was a hitch whether anything needed the asset or not.
-        if (h.ref.ptr == *h.ptr && !alive(h.ref)) { *h.ptr = 0; h.ref = {}; flutterTries = 0; continue; }
+        if (h.ref.ptr == *h.ptr && (!alive(h.ref) || dying(h.ref.ptr))) { *h.ptr = 0; h.ref = {}; flutterTries = 0; continue; }
         h.ref = refOf(*h.ptr);
     }
 }
@@ -1255,6 +1284,16 @@ struct SlowFrame {
 static void tick(void*) {
     SlowFrame slow;
     InterlockedExchange(&queued, 0);
+    static DWORD sweepAt;
+    DWORD clock = GetTickCount();
+    if ((int)(clock - sweepAt) >= 0) {
+        sweepAt = clock + 60000;
+        int gone = 0;
+        for (auto it = cars.begin(); it != cars.end();)
+            if (alive(it->second.self)) ++it;
+            else { it = cars.erase(it); gone++; }
+        MT_LOG("objects %d, cars %d (%d gone)", api->num_objects(), (int)cars.size(), gone);
+    }
     keepLoaded();
     std::lock_guard<std::mutex> g(lock);
     if (vehicles.empty()) return;
@@ -1314,6 +1353,7 @@ static DWORD WINAPI run(LPVOID) {
     base.spread = iniNum(L"ecu_tuning.ini", L"ECU", L"FlameWidth", 0.2);
     base.bang = iniNum(L"ecu_tuning.ini", L"ECU", L"BangChance", 0);
     base.flameRevs = iniNum(L"ecu_tuning.ini", L"ECU", L"FlameRevs", 0.6);
+    base.cool = iniNum(L"ecu_tuning.ini", L"ECU", L"CoolingBoost", 0);
     base.lag = iniNum(L"ecu_tuning.ini", L"ECU", L"AntiLag", 0);
     base.lagRevs = iniNum(L"ecu_tuning.ini", L"ECU", L"AntiLagRevs", 0.5);
     base.timing = iniNum(L"ecu_tuning.ini", L"ECU", L"Timing", 0.5);
@@ -1373,6 +1413,7 @@ static DWORD WINAPI run(LPVOID) {
     fLowHz = api->find_object("Function", "SetLowPassFilterFrequency", "AudioComponent");
     fHighOn = api->find_object("Function", "SetHighPassFilterEnabled", "AudioComponent");
     fHighHz = api->find_object("Function", "SetHighPassFilterFrequency", "AudioComponent");
+    fSetSound = api->find_object("Function", "SetSound", "AudioComponent");
     fWhinePitch = api->find_object("Function", "SetPitchMultiplier", "AudioComponent");
     fWhineVolume = api->find_object("Function", "SetVolumeMultiplier", "AudioComponent");
     fWhineIsOn = api->find_object("Function", "IsPlaying", "AudioComponent");
@@ -1422,6 +1463,10 @@ static DWORD WINAPI run(LPVOID) {
         int at = off(sIntake, "IntakeSpeedEfficencyMultiplier");
         canEcu = at >= 0;
         oTrim[12] = oIntake + at;
+        uintptr_t sRadiator = api->find_object("ScriptStruct", "MTVehiclePartCoolantRadiator", "/Script/MotorTown");
+        int radiator = off(cComp, "CoolantRadiator"), power = sRadiator ? off(sRadiator, "CoolingPower") : -1;
+        canEcu = canEcu && radiator >= 0 && power >= 0;
+        oTrim[13] = radiator + power;
     }
     oPedal = off(cVeh, "Throttle");
     oBrake = off(cVeh, "Brake");
