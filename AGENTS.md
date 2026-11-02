@@ -40,7 +40,10 @@ Settings are per vehicle in `Binaries\Win64\plugins\ecu_tuning.ini`, `[Vehicle<i
   per-car copies at `Turbocharger`, so `tuneEngine` writes those, remembering the base so a part
   swap is noticed.
 - **A loaded asset nothing references is collected about once a minute.** `keepLoaded` forgets
-  it and the next use reloads it. A stale pointer crashes; reloading at once stutters.
+  it and the next use reloads it. A stale pointer crashes; reloading at once stutters. An object
+  being destroyed still looks alive in the object table, so `dying()` checks its flags too.
+- **Sounds play on a fixed set of components per car** (`playOn`), never one spawned per shot.
+  Spawning fed the collector and handed the audio thread half destroyed sounds.
+- **Traffic runs one frame in eight.** Only the player's car is every frame.
 - **Part row names are the metadata:** the supercharger stage comes from the fitted intake's
   name, so MoreTuning's parts stay plain intakes without this plugin.
-- `SlowFrame` is a diagnostic for frame hiccups: remove it once they are understood.

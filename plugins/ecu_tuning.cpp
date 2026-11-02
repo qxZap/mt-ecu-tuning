@@ -904,10 +904,12 @@ static void tickWhine(uintptr_t v, Car& car, float pedal, double ratio, uintptr_
     if ((int)(now - car.whineAt) < 0) return;
     car.whineAt = now + 50;
     if (!whistle) {
-        // Teh's Hellcat at the top of its revs, which is nearly all blower. The vanilla whistle
-        // is only for a game without his pack: it hisses more than it whines.
+        // Teh's Hellcat at the top of its revs, which is nearly all blower. His pack is optional:
+        // without it there is simply no whine, and asking is a blocking load so it stops.
+        static int whineTries;
+        if (whineTries >= 3) return;
+        whineTries++;
         whistle = loadAsset(L"/Game/Cars/Parts/Engine/Sound/hellcatv8/hellcathigh.hellcathigh");
-        if (!whistle) whistle = loadAsset(L"/Game/Sounds/Vehicle/Intake/TurboWhistle_01_High.TurboWhistle_01_High");
         flutterRoom = loadAsset(L"/Game/Sounds/EngineSoundAttenuation.EngineSoundAttenuation");
         MT_LOG("supercharger whine %s", whistle ? "loaded" : "NOT LOADED");
         if (!whistle) return;
