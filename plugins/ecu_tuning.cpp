@@ -433,7 +433,7 @@ static void flame(uintptr_t v, Car& car, int i, const Tune& t, double energy, do
     double n = sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
     s.r1 = {a.x / n, a.y / n, a.z / n};
     s.r2 = {s.dir.y * s.r1.z - s.dir.z * s.r1.y, s.dir.z * s.r1.x - s.dir.x * s.r1.z, s.dir.x * s.r1.y - s.dir.y * s.r1.x};
-    s.size = 0.7 * bigger * t.size;
+    s.size = 1.05 * bigger * t.size;
     s.bias = (t.fuel - 0.5) * 0.5;  // rich burns redder, lean bluer
     s.flash = flash;
     if (s.sparks.empty()) s.sparks.resize(v == playerNow ? 14 : 3);
@@ -540,7 +540,7 @@ static void tickFlames(DWORD now, double dt) {
                     struct { float rgba[4]; bool srgb; } tint = {{0, 0, 0, 1}, false};
                     heatRgb(s.bias + (1 - s.energy) * 0.33 + 0.15 + u * 0.6, tint.rgba);
                     if (frame % 2 == 0) api->process_event(s.light.ptr, fLightColor, &tint);
-                    float power = (float)(40 * s.flash * s.size / 0.07 * (0.5 + s.energy) * shape * (0.7 + 0.6 * roll()));
+                    float power = (float)(40 * s.flash * s.size / 0.105 * (0.5 + s.energy) * shape * (0.7 + 0.6 * roll()));
                     api->process_event(s.light.ptr, fIntensity, &power);
                 }
                 for (int c = 0; c < 2; c++) {
@@ -925,11 +925,11 @@ static void tickWhine(uintptr_t v, Car& car, float pedal, double ratio, uintptr_
         api->process_event(audio, fHighHz, &above);
         MT_LOG("supercharger on %s, stage %d, sound %s", objName(classOf(v)).c_str(), car.blower, objName(whistle).c_str());
     }
-    // Belt driven, so it follows the revs alone; load is what makes it loud.
-    double want = ratio < 0.02 ? 0 : pedal > 0.1f ? pedal * (0.25 + 0.75 * ratio) : 0.05 * ratio;
+    // Belt driven: a blower is always turning, so it sings at every rev, pedal or no pedal.
+    double want = ratio < 0.02 ? 0 : 0.25;
     car.whineLevel += (float)((want - car.whineLevel) * 0.35);
     double spin = ratio / 0.8;  // the clip is high in the rev range, so about here it plays as recorded
-    float pitch = (float)((spin < 0.55 ? 0.55 : spin > 1.5 ? 1.5 : spin) * (1 + 0.03 * car.blower)), volume = (float)(2 * car.whineLevel * (0.7 + 0.2 * car.blower));
+    float pitch = (float)((spin < 0.55 ? 0.55 : spin > 1.5 ? 1.5 : spin) * (1 + 0.03 * car.blower)), volume = car.whineLevel;
     if (volume < 0.001f) volume = 0.001f;
     api->process_event(car.whine.ptr, fWhinePitch, &pitch);
     api->process_event(car.whine.ptr, fWhineVolume, &volume);
