@@ -23,12 +23,12 @@ folder is the check, so log what you need to see in game.
   update recheck every signature and hardcoded offset.
 - A plugin rewriting game data affects the machine running the game: single player or the
   host. On someone else's server that server's rules apply.
-- Settings live in `Binaries\Win64\<plugin>.ini`, through the loader's ini functions. After
+- Settings live in `Binaries\Win64\plugins\<plugin>.ini`, through the loader's ini functions (`iniFile` moves an old file over). `[General] Disabled=1` makes `PluginInit` start nothing. After
   renaming one, move the old file on start so players keep their settings.
 
 ## This plugin
 
-Settings are per vehicle in `Binaries\Win64\ecu_tuning.ini`, `[Vehicle<id>]`, with defaults in
+Settings are per vehicle in `Binaries\Win64\plugins\ecu_tuning.ini`, `[Vehicle<id>]`, with defaults in
 `[ECU]`. A file value beats the code default, so changing a default means renaming its key.
 
 - **The game's spin box scales its step by the value's magnitude** (0.01 below 1, 10 from 10 up).

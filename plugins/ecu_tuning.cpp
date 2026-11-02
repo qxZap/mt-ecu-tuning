@@ -1337,7 +1337,7 @@ static DWORD WINAPI run(LPVOID) {
     MT_LOG("ECU Tuning loaded");
     {
         static wchar_t names[65536];
-        GetPrivateProfileSectionNamesW(names, 65536, (gameDir() + L"ecu_tuning.ini").c_str());
+        GetPrivateProfileSectionNamesW(names, 65536, iniPath(L"ecu_tuning.ini").c_str());
         for (const wchar_t* n = names; *n; n += wcslen(n) + 1) tuned.insert(n);
     }
     base.on = iniNum(L"ecu_tuning.ini", L"ECU", L"Enabled", 1);
@@ -1596,6 +1596,7 @@ static DWORD WINAPI run(LPVOID) {
 
 extern "C" __declspec(dllexport) int PluginInit(const MtApi* a) {
     if (!attach(a)) return 1;
+    if (iniDisabled(L"ecu_tuning.ini")) return 0;
     CloseHandle(CreateThread(nullptr, 0, run, nullptr, 0, nullptr));
     return 0;
 }
