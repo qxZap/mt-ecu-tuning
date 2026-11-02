@@ -925,8 +925,8 @@ static void tickWhine(uintptr_t v, Car& car, float pedal, double ratio, uintptr_
         api->process_event(audio, fHighHz, &above);
         MT_LOG("supercharger on %s, stage %d, sound %s", objName(classOf(v)).c_str(), car.blower, objName(whistle).c_str());
     }
-    // Belt driven: a blower is always turning, so it sings at every rev, pedal or no pedal.
-    double want = ratio < 0.02 ? 0 : 0.5;
+    // Belt driven, so the revs alone set it: next to nothing at idle, climbing to full at the limiter.
+    double want = 0.5 * pow(ratio > 1 ? 1 : ratio, 2.5);
     car.whineLevel += (float)((want - car.whineLevel) * 0.35);
     double spin = ratio / 0.8;  // the clip is high in the rev range, so about here it plays as recorded
     float pitch = (float)((spin < 0.55 ? 0.55 : spin > 1.5 ? 1.5 : spin) * (1 + 0.03 * car.blower)), volume = car.whineLevel;
@@ -1270,6 +1270,11 @@ static void keepLoaded() {
 }
 
 static void tick(void*) {
+    // shortcut: finds the freezes a few seconds into a world. Remove once they are explained.
+    static DWORD lastTick;
+    DWORD stamp = GetTickCount();
+    if (lastTick && stamp - lastTick > 150 && loggingOn()) MT_LOG("hitch %lu ms", stamp - lastTick);
+    lastTick = stamp;
     InterlockedExchange(&queued, 0);
     keepLoaded();
     std::lock_guard<std::mutex> g(lock);
