@@ -926,7 +926,7 @@ static void tickWhine(uintptr_t v, Car& car, float pedal, double ratio, uintptr_
         MT_LOG("supercharger on %s, stage %d, sound %s", objName(classOf(v)).c_str(), car.blower, objName(whistle).c_str());
     }
     // Belt driven: a blower is always turning, so it sings at every rev, pedal or no pedal.
-    double want = ratio < 0.02 ? 0 : 0.25;
+    double want = ratio < 0.02 ? 0 : 0.5;
     car.whineLevel += (float)((want - car.whineLevel) * 0.35);
     double spin = ratio / 0.8;  // the clip is high in the rev range, so about here it plays as recorded
     float pitch = (float)((spin < 0.55 ? 0.55 : spin > 1.5 ? 1.5 : spin) * (1 + 0.03 * car.blower)), volume = car.whineLevel;
