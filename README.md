@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/hero.png" alt="ECU Tuning" width="100%">
+</p>
+
 # ECU Tuning
 
 Plugin that adds an ECU Tuning section to the garage's Tuning screen, set per vehicle.
