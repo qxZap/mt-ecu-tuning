@@ -58,8 +58,8 @@ using namespace mt;
 struct Vec { double x, y, z; };
 struct Ref { int index; uintptr_t ptr; };
 struct Pipe { Vec at; double spin[4]; double radius; };
-struct Spark { Ref c; uintptr_t mid; Vec pos, vel; double age, life, width, length, kick, heat; bool live; };
-struct Slot { Ref owner; Pipe pipe; Vec dir, r1, r2; Ref cone[2], light; uintptr_t coneMid[2]; double glow, flash, bias, coneLength, style, size, debt, spread, energy, swirl, spin, phase[3]; DWORD start, end; bool on; std::vector<Spark> sparks; };
+struct Spark { Ref c; uintptr_t mid; Vec pos, vel; double age, life, width, length, kick, heat, out; bool live; };
+struct Slot { Ref owner; Pipe pipe; Vec dir, r1, r2; Ref cone[2], light; uintptr_t coneMid[2]; double glow, flash, advance, rich, coneLength, style, size, debt, spread, energy, swirl, spin, phase[3]; DWORD start, end; bool on; std::vector<Spark> sparks; };
 struct Voice { Ref owner; DWORD at; float pitch, volume, lowpass, highpass; };
 struct Flutter { double pitch, low, high, volume; int shots; DWORD gap; int turbos; };
 struct Trim { float base, wrote; bool set; };
@@ -434,11 +434,12 @@ static void flame(uintptr_t v, Car& car, int i, const Tune& t, double energy, do
     s.r1 = {a.x / n, a.y / n, a.z / n};
     s.r2 = {s.dir.y * s.r1.z - s.dir.z * s.r1.y, s.dir.z * s.r1.x - s.dir.x * s.r1.z, s.dir.x * s.r1.y - s.dir.y * s.r1.x};
     s.size = 1.05 * bigger * t.size;
-    s.bias = (t.fuel - 0.5) * 0.5;  // rich burns redder, lean bluer
+    s.advance = (t.timing - 0.5) * 2;  // -1 retarded .. 1 advanced
+    s.rich = (t.fuel - 0.5) * 2;       // -1 lean .. 1 rich
     s.flash = flash;
     if (s.sparks.empty()) s.sparks.resize(v == playerNow ? 14 : 3);
     s.style = style;
-    s.spread = 1.5 * t.spread * (style == 2 ? 1.8 : 1);
+    s.spread = 1.5 * t.spread * (style == 2 ? 1.8 : 1) * (1 - 0.25 * (t.timing - 0.5) * 2);
     s.energy = energy;
     if (!s.on) {  // a new burst gets its own noise, so no two are alike
         s.swirl = roll() * 6.2831853;
@@ -461,25 +462,43 @@ static void flame(uintptr_t v, Car& car, int i, const Tune& t, double energy, do
 
 // One streak off the pipe. Three kinds, by pool position: a thin fast yellow core, the orange
 // body, and a slow wide red wisp that scatters like the diesel smoke does.
-// Blue at its hottest, through yellow and orange, out as red. x runs 0 to 1.
-static void heatRgb(double x, float* rgb) {
-    static const float RAMP[4][3] = {{0.02f, 0.08f, 1}, {1, 0.55f, 0.01f}, {1, 0.12f, 0}, {0.9f, 0.01f, 0}};
-    double at = (x < 0 ? 0 : x > 1 ? 1 : x) * 2.999;
-    int band = (int)at;
-    float mix = (float)(at - band);
-    for (int i = 0; i < 3; i++) rgb[i] = RAMP[band][i] + (RAMP[band + 1][i] - RAMP[band][i]) * mix;
+static double smooth(double from, double to, double x) {
+    double t = (x - from) / (to - from);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return t * t * (3 - 2 * t);
 }
 
-static void heatColor(uintptr_t mid, double x) {
+// A flame's colour is where a point sits in it, not a colour of its own. along runs 0 at the pipe
+// to 1 at the tip, out 0 on the axis to 1 at the edge: a blue base where it burns hottest, red
+// through the body and spread, yellow tips where the soot glows, and the edge stays red.
+// Advanced timing and a lean mix burn hotter and cleaner, so the blue climbs up the flame. Rich
+// or retarded burns late and sooty, so the yellow comes down it, and a hard burst adds blue.
+static void flameRgb(const Slot& s, double along, double out, float* rgb) {
+    static const float BLUE[3] = {0.02f, 0.1f, 1}, RED[3] = {1, 0.05f, 0.01f}, YELLOW[3] = {1, 0.68f, 0.04f};
+    double clean = s.advance - s.rich;  // -2 .. 2
+    double blueTo = 0.22 + 0.11 * clean + 0.12 * s.energy;
+    double tipFrom = 0.68 + 0.1 * clean;
+    blueTo = blueTo < 0.04 ? 0.04 : blueTo > 0.6 ? 0.6 : blueTo;
+    tipFrom = tipFrom < blueTo + 0.1 ? blueTo + 0.1 : tipFrom > 0.92 ? 0.92 : tipFrom;
+    double blue = 1 - smooth(blueTo * 0.5, blueTo, along);
+    double tip = smooth(tipFrom, tipFrom + 0.18, along) * (1 - 0.7 * out);
+    for (int i = 0; i < 3; i++) {
+        double c = RED[i] + (YELLOW[i] - RED[i]) * tip;
+        rgb[i] = (float)(c + (BLUE[i] - c) * blue);
+    }
+}
+
+static void heatColor(uintptr_t mid, const Slot& s, double along, double out) {
     if (!mid) return;
     struct { uint64_t name; float rgba[4]; } color = {lightColorName, {0, 0, 0, 1}};
-    heatRgb(x, color.rgba);
+    flameRgb(s, along, out, color.rgba);
     api->process_event(mid, fMidColor, &color);
 }
 
 static void launch(Slot& s, Spark& p, int kind, double seconds) {
     static const double WIDTH[3] = {0.08, 0.12, 0.2}, LENGTH[3] = {1.6, 2, 1.2}, LIFE[3] = {0.05, 0.07, 0.1}, SPREAD[3] = {0.03, 0.05, 0.11}, PACE[3] = {1, 1, 0.55};
-    double speed = s.size * 3240 * (0.7 + 0.6 * roll()) * (0.8 + 0.4 * s.energy) * PACE[kind];
+    double burn = 1 + 0.3 * s.advance - 0.15 * (s.rich > 0 ? s.rich : 0);
+    double speed = burn * s.size * 3240 * (0.7 + 0.6 * roll()) * (0.8 + 0.4 * s.energy) * PACE[kind];
     // Slow noise, sines at unrelated rates with this burst's phases: it moves a hot spot round the
     // circle and breathes it in and out, so the shape keeps changing and never repeats.
     double noise = (sin(seconds * 7.3 + s.phase[0]) + sin(seconds * 11.9 + s.phase[1]) + sin(seconds * 19.1 + s.phase[2])) / 3;
@@ -493,13 +512,14 @@ static void launch(Slot& s, Spark& p, int kind, double seconds) {
     double off0 = s.pipe.radius * 0.6 * roll();
     p.pos = {s.pipe.at.x + out.x * off0, s.pipe.at.y + out.y * off0, s.pipe.at.z + out.z * off0};
     p.age = 0;
-    p.life = LIFE[kind] * (1 + roll());
+    p.life = LIFE[kind] * (1 + roll()) * (1 - 0.25 * s.advance + 0.3 * (s.rich > 0 ? s.rich : 0));
     double fan = speed * SPREAD[kind] * roll() + circle / (p.life * 0.6);  // sideways enough to reach the circle in its flight
     p.vel = {s.dir.x * speed + out.x * fan, s.dir.y * speed + out.y * fan, s.dir.z * speed + out.z * fan};
-    p.width = s.size * WIDTH[kind] * 1.4;
+    p.width = s.size * WIDTH[kind] * 1.4 * (1 + 0.35 * (s.rich > 0 ? s.rich : 0) - 0.2 * s.advance);
     p.length = s.size * LENGTH[kind];
     p.kick = speed * 0.8;
-    p.heat = s.bias + (1 - s.energy) * 0.33 + kind * 0.22;  // the hotter the burst, the further down the ramp it starts
+    p.heat = (1 - s.energy) * 0.2 + kind * 0.15;  // the wider kinds are born further up the flame
+    p.out = ring ? 0.5 + 0.5 * roll() : 0.3 * roll();
     p.live = true;
     // Laid along its own flight, so the streaks fan out as a cone instead of marching in parallel.
     double n = sqrt(p.vel.x * p.vel.x + p.vel.y * p.vel.y + p.vel.z * p.vel.z);
@@ -538,7 +558,7 @@ static void tickFlames(DWORD now, double dt) {
                     double reach = 35 + s.coneLength * 50 * shape;
                     placeMesh(s.light, {s.pipe.at.x + s.dir.x * reach, s.pipe.at.y + s.dir.y * reach, s.pipe.at.z + s.dir.z * reach}, 1, 1);
                     struct { float rgba[4]; bool srgb; } tint = {{0, 0, 0, 1}, false};
-                    heatRgb(s.bias + (1 - s.energy) * 0.33 + 0.15 + u * 0.6, tint.rgba);
+                    flameRgb(s, 0.2 + u * 0.6, 0.5, tint.rgba);
                     if (frame % 2 == 0) api->process_event(s.light.ptr, fLightColor, &tint);
                     float power = (float)(40 * s.flash * s.size / 0.105 * (0.5 + s.energy) * shape * (0.7 + 0.6 * roll()));
                     api->process_event(s.light.ptr, fIntensity, &power);
@@ -547,7 +567,7 @@ static void tickFlames(DWORD now, double dt) {
                     if (!alive(s.cone[c]) || s.style == 2) continue;
                     double inner = c ? 0.55 : 1, length = s.coneLength * inner * shape * (0.85 + 0.3 * roll()), half = length * 50;
                     Vec at{s.pipe.at.x + s.dir.x * half, s.pipe.at.y + s.dir.y * half, s.pipe.at.z + s.dir.z * half};
-                    heatColor(s.coneMid[c], s.bias + (1 - s.energy) * 0.33 + (c ? 0 : 0.25) + u * 0.6);  // the inner cone runs hotter
+                    heatColor(s.coneMid[c], s, (c ? 0.02 : 0.3) + u * 0.6, c ? 0 : 0.4);  // the inner cone is the base
                     placeMesh(s.cone[c], at, s.size * 0.22 * inner, length);
                 }
                 if (s.style != 1) s.debt += 70 * (0.5 + s.energy) * dt;
@@ -580,7 +600,7 @@ static void tickFlames(DWORD now, double dt) {
                 p.vel.y += (roll() - 0.5) * lick;
                 p.vel.z += (roll() - 0.5) * lick;
                 p.pos.x += p.vel.x * dt; p.pos.y += p.vel.y * dt; p.pos.z += p.vel.z * dt;
-                if ((frame + (unsigned)(&p - s.sparks.data())) % 2 == 0) heatColor(p.mid, p.heat + u * (1 - p.heat));
+                if ((frame + (unsigned)(&p - s.sparks.data())) % 2 == 0) heatColor(p.mid, s, p.heat + u * (1 - p.heat), p.out);
                 placeMesh(p.c, p.pos, p.width * k, p.length * (1 - 0.4 * u));
             }
         }
