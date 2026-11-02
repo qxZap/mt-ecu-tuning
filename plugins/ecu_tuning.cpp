@@ -890,7 +890,7 @@ static bool flag(uintptr_t obj, uintptr_t fn);
 static void tickWhine(uintptr_t v, Car& car, float pedal, double ratio, uintptr_t pawn, const Vec& me, DWORD now) {
     if (!canFlutter || !fWhinePitch || !fWhineVolume || !fWhineIsOn || !fWhinePlay || !fWhineStop) return;
     if ((int)(now - car.whineCheck) >= 0) {
-        car.whineCheck = now + 1000;
+        car.whineCheck = now + (v == playerNow ? 1000 : 5000);
         std::string key = fittedPart(v, 5);  // EMTVehiclePartSlot::Intake
         for (auto& c : key) c = (char)tolower(c);
         size_t stage = key.find("stage");
@@ -1267,33 +1267,8 @@ static void keepLoaded() {
     }
 }
 
-// shortcut: a diagnostic for the frame hiccups, remove once they are found.
-struct SlowFrame {
-    LARGE_INTEGER from;
-    SlowFrame() { QueryPerformanceCounter(&from); }
-    ~SlowFrame() {
-        static int said;
-        LARGE_INTEGER to, hz;
-        QueryPerformanceCounter(&to);
-        QueryPerformanceFrequency(&hz);
-        double ms = (to.QuadPart - from.QuadPart) * 1000.0 / hz.QuadPart;
-        if (ms > 4 && said < 60) { said++; MT_LOG("slow tick %.1f ms: %d cars, %d voices, %d fired", ms, (int)cars.size(), (int)voices.size(), (int)fired.size()); }
-    }
-};
-
 static void tick(void*) {
-    SlowFrame slow;
     InterlockedExchange(&queued, 0);
-    static DWORD sweepAt;
-    DWORD clock = GetTickCount();
-    if ((int)(clock - sweepAt) >= 0) {
-        sweepAt = clock + 60000;
-        int gone = 0;
-        for (auto it = cars.begin(); it != cars.end();)
-            if (alive(it->second.self)) ++it;
-            else { it = cars.erase(it); gone++; }
-        MT_LOG("objects %d, cars %d (%d gone)", api->num_objects(), (int)cars.size(), gone);
-    }
     keepLoaded();
     std::lock_guard<std::mutex> g(lock);
     if (vehicles.empty()) return;
@@ -1315,14 +1290,20 @@ static void tick(void*) {
     tickFired(now);
     tickPanel(now);
     struct { uintptr_t context; int index; uintptr_t ret; } who = {0, 0, 0};
+    static unsigned turn;
+    unsigned place = 0;
+    turn++;
     for (auto& r : vehicles)
         if (alive(r)) { who.context = r.ptr; break; }
     if (!who.context) return;
     api->process_event(gameplayCDO, fPawn, &who);
     playerNow = who.ret;
     Vec me = who.ret ? callVec(who.ret, fLoc) : Vec{};
-    for (auto& r : vehicles)
-        if (alive(r)) one(r.ptr, who.ret, me, dt, now);
+    for (auto& r : vehicles) {
+        if (r.ptr == playerNow) { if (alive(r)) one(r.ptr, who.ret, me, dt, now); continue; }
+        // The player every frame, the rest of the traffic one frame in eight, staggered.
+        if (++place % 8 == turn % 8 && alive(r)) one(r.ptr, who.ret, me, dt * 8, now);
+    }
 }
 
 static uintptr_t findEffect(int field) {
@@ -1563,7 +1544,7 @@ static DWORD WINAPI run(LPVOID) {
     } else MT_LOG("number rows not found (%d, %d matches): the ECU rows show but cannot change", (int)range.size(), (int)value.size());
 
     for (int beat = 0;; beat++) {
-        if (beat % 60 == 0) {  // about a second
+        if (beat % 120 == 0) {  // about two seconds
             std::vector<Ref> v, w;
             for (int i = 0, n = api->num_objects(); i < n; i++) {
                 uintptr_t o = api->object(i);
@@ -1581,11 +1562,9 @@ static DWORD WINAPI run(LPVOID) {
             std::lock_guard<std::mutex> g(lock);
             vehicles.swap(v);
             screens.swap(w);
-            for (auto c = cars.begin(); c != cars.end();) {
-                bool found = false;
-                for (auto& r : vehicles) found = found || r.ptr == c->first;
-                c = found ? std::next(c) : cars.erase(c);
-            }
+            std::set<uintptr_t> here;
+            for (auto& r : vehicles) here.insert(r.ptr);
+            for (auto c = cars.begin(); c != cars.end();) c = here.count(c->first) ? std::next(c) : cars.erase(c);
             if (ex && !smoke) { smoke = ex; MT_LOG("smoke %s", objName(smoke).c_str()); }
         }
         if (beat % 600 == 0) InterlockedExchange(&queued, 0);  // a queue dropped at a level change
