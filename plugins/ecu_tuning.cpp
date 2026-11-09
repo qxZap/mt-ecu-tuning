@@ -221,7 +221,7 @@ static bool lowFx, lowForced;
 static bool whineIsOurs;
 static int whineTries;  // reset when the collector frees the whine, or it stops loading after the 3rd collection
 static uintptr_t fSetSound, fIsServer, whistle, fWhinePitch, fWhineVolume, fWhineIsOn, fWhinePlay, fWhineStop, fFadeOut;
-static int oTankFuel = -1, oTankCap = -1;  // MTVehicle.NetLC_VehicleState.Fuel, FuelTankCapacityInLiter
+static int oTankFuel = -1, oTankCap = -1, oFuelCons = -1;  // + MTEngineProperty.FuelConsumption  // MTVehicle.NetLC_VehicleState.Fuel, FuelTankCapacityInLiter
 static int oFuelType = -1, oBrake = -1, oPedal = -1, oRepPedal = -1, oAiDriving = -1, oTurbineSpeed = -1;
 static uintptr_t waves[6], booms[2];
 static int oTrim[14];
@@ -2216,7 +2216,7 @@ static void pipeHeat(Car& car, const Tune& t, double ratio, bool on, bool cut, b
 // out of the tank. The rate is learnt per car: over 5 s windows on throttle, the tank's own drop against the model's flow
 // gives tank units per unit of flow, so whatever the game's units and the engine's consumption, a pipe full of fuel costs
 // what that much fuel costs the engine. Only where this machine owns the vehicle's state (the server, single player).
-static void burnFuel(uintptr_t v, Car& car, double toPipe, double flow, bool learning, double step) {
+static void burnFuel(uintptr_t v, uintptr_t data, Car& car, double toPipe, double flow, bool learning, double step) {
     if (!car.host || oTankFuel < 0 || step <= 0) return;
     float tank = get<float>(v + oTankFuel), cap = oTankCap >= 0 ? get<float>(v + oTankCap) : 0;
     if (!(tank >= 0) || (cap > 0 && tank > cap * 1.01f) || tank > 100000) { car.tankLast = -1; return; }
@@ -2226,6 +2226,12 @@ static void burnFuel(uintptr_t v, Car& car, double toPipe, double flow, bool lea
             if (car.learnFlow > 0.5 && car.learnDrop > 0) {
                 double k = car.learnDrop / car.learnFlow;
                 car.burnK = car.burnK <= 0 ? k : car.burnK + 0.3 * (k - car.burnK);
+                // shortcut: learnt per car; this line is what maps the asset's FuelConsumption onto it, so the rate can
+                // come from the asset alone once a few engines have been logged
+                static int told;
+                if (told++ < 40 && data && oFuelCons >= 0)
+                    MT_LOG("fuel rate %s: %.5f tank per flow-second (window %.4f), asset FuelConsumption %.4f, tank %.1f of %.1f",
+                           objName(data).c_str(), car.burnK, k, get<float>(data + oProp + oFuelCons), tank, cap);
             }
             car.learnDrop = car.learnFlow = car.learnT = 0;
         }
@@ -2271,7 +2277,7 @@ static void exhaust(uintptr_t v, uintptr_t engine, Car& car, const Tune& t, doub
         if (als) { toPipe += 0.45 * scale * (1 + t.boost); heatWant = 0.95; loss = 0.35; }
     }
     double step = dt > 0.4 ? 0.4 : dt;
-    burnFuel(v, car, toPipe, flow, on && !cut && ratio > 0.3, step);
+    burnFuel(v, data, car, toPipe, flow, on && !cut && ratio > 0.3, step);
     car.loss += (loss - car.loss) * (step / 0.2 > 1 ? 1 : step / 0.2);
     double tau = heatWant > car.egt ? 1.2 : 2.6;
     car.egt += ((heatWant > 1 ? 1 : heatWant) - car.egt) * (step / tau > 1 ? 1 : step / tau);
@@ -3245,7 +3251,7 @@ static DWORD WINAPI run(LPVOID) {
     if (!ok) return 0;
     oEngine = off(cVeh, "EngineComponent"); oId = off(cVeh, "Net_VehicleId");
     oData = off(cComp, "EngineData"); oHot = off(cComp, "NetLC_EngineHotState"); oNative = off(cComp, "AfterfireAudioComponents"); oPipes = off(cComp, "ExhaustBlackSmokes"); oWhite = off(cComp, "ExhaustWhiteSmokes");
-    oProp = off(cData, "EngineProperty"); oAfter = off(sProp, "AfterFireProbability"); oMax = off(sProp, "MaxRPM"); oTorque = off(sProp, "MaxTorque"); oFuelType = off(sProp, "FuelType"); oMotor = off(sProp, "MotorMaxPower");
+    oProp = off(cData, "EngineProperty"); oAfter = off(sProp, "AfterFireProbability"); oMax = off(sProp, "MaxRPM"); oTorque = off(sProp, "MaxTorque"); oFuelType = off(sProp, "FuelType"); oFuelCons = off(sProp, "FuelConsumption"); oMotor = off(sProp, "MotorMaxPower");
     oRpm = off(sHot, "CurrentRPM"); oThrottle = off(sHot, "Throttle"); oFxSmoke = off(cFx, "ExhaustNS");
     uintptr_t sTurbo = api->find_object("ScriptStruct", "MTVehiclePartTurbocharger", "/Script/MotorTown");
     int turboValid = sTurbo ? off(sTurbo, "bIsValid") : -1, turbo = off(cComp, "Turbocharger");
