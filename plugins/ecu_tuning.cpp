@@ -77,7 +77,8 @@ struct Slot { Ref owner; Pipe pipe; Vec dir, r1, r2, lightAt; Ref core, light; u
 struct Voice { Ref owner; DWORD at; float pitch, volume, lowpass, highpass; };
 struct Flutter { double pitch, low, high, volume; int shots; DWORD gap; int turbos; };
 struct Trim { float base, wrote; bool set; };
-struct Car { std::vector<Pipe> fire; int listed = 0; DWORD sockAt = 0; std::string sockSig; DWORD flutterAt = 0, ecuAt = 0, bangAt = 0, alsUntil = 0, liftAt = 0; bool lagging = false, host = false, pedalSeen = false, armed = false, throttleSeen = false, repSeen = false; double egt = 0.25, pipeFuel = 0, loss = 0, burn = 0, burnFor = 0, soak = 0; bool licked = false; double wall[5] = {650, 600, 560, 500, 450}, mouthK = 600, tipFuel = 0, tipO2 = 0.5; DWORD lastLight = 0, burnPause = 0, burnNext = 0; std::vector<DWORD> recent; float lastRatio = 0, guess = 0; DWORD seenAt = 0; Trim trim[14] = {}; Ref whine = {}, self = {}, voice[8] = {}; uintptr_t voiceSound[8] = {}; int nextVoice = 0; DWORD whineCheck = 0, whineAt = 0; int blower = -1; bool whineNear = false; float whineLevel = 0; float rpm = 0, fuel = 0, spool = 0; DWORD next = 0; bool read = false; DWORD readAgain = 0; std::string pipeSig; uintptr_t engine = 0; std::vector<Vec> wrote; std::vector<Pipe> pipes; std::vector<Slot> slots; std::vector<Ref> smokes; };
+struct Car { std::vector<Pipe> fire; int listed = 0; DWORD sockAt = 0; std::string sockSig; DWORD flutterAt = 0, ecuAt = 0, bangAt = 0, alsUntil = 0, liftAt = 0; bool lagging = false, host = false, pedalSeen = false, armed = false, throttleSeen = false, repSeen = false; double egt = 0.25, pipeFuel = 0, loss = 0, burn = 0, burnFor = 0, soak = 0; bool licked = false; double wall[5] = {650, 600, 560, 500, 450}, mouthK = 600, tipFuel = 0, tipO2 = 0.5; DWORD lastLight = 0, burnPause = 0, burnNext = 0; std::vector<DWORD> recent; float lastRatio = 0, guess = 0; DWORD seenAt = 0; Trim trim[14] = {}; Ref whine = {}, self = {}, voice[8] = {}; uintptr_t voiceSound[8] = {}; int nextVoice = 0; DWORD whineCheck = 0, whineAt = 0; int blower = -1; bool whineNear = false; float whineLevel = 0; float rpm = 0, fuel = 0, spool = 0; DWORD next = 0; bool read = false; DWORD readAgain = 0; std::string pipeSig; uintptr_t engine = 0; std::vector<Vec> wrote; std::vector<Pipe> pipes; std::vector<Slot> slots; std::vector<Ref> smokes;
+    double burnK = 0, tankLast = -1, learnDrop = 0, learnFlow = 0, learnT = 0; };  // flames burn real fuel (exhaust())
 struct FStr { const wchar_t* data; int num, max; };
 struct Tune { double on, pops, revs, volume, flames, length, size, dpf, smoke, lasts, spread, chance, bang, timing, fuel, boost, lag, lagRevs, flameRevs, cool, life, density, shape, twin, gap, p1, p2, p3, p4, x1, x2, x3, x4, y1, y2, y3, y4, z1, z2, z3, z4, ovFuel, ovRetard, spark, decat, wide, header, back; bool own; };
 
@@ -220,6 +221,7 @@ static bool lowFx, lowForced;
 static bool whineIsOurs;
 static int whineTries;  // reset when the collector frees the whine, or it stops loading after the 3rd collection
 static uintptr_t fSetSound, fIsServer, whistle, fWhinePitch, fWhineVolume, fWhineIsOn, fWhinePlay, fWhineStop, fFadeOut;
+static int oTankFuel = -1, oTankCap = -1;  // MTVehicle.NetLC_VehicleState.Fuel, FuelTankCapacityInLiter
 static int oFuelType = -1, oBrake = -1, oPedal = -1, oRepPedal = -1, oAiDriving = -1, oTurbineSpeed = -1;
 static uintptr_t waves[6], booms[2];
 static int oTrim[14];
@@ -2210,6 +2212,32 @@ static void pipeHeat(Car& car, const Tune& t, double ratio, bool on, bool cut, b
     car.tipO2 += (o2 - car.tipO2) * k;
 }
 
+// The flames burn real fuel (the user, 2026-11-09): what the tune sends into the pipe (rich, overrun fuel, anti-lag) comes
+// out of the tank. The rate is learnt per car: over 5 s windows on throttle, the tank's own drop against the model's flow
+// gives tank units per unit of flow, so whatever the game's units and the engine's consumption, a pipe full of fuel costs
+// what that much fuel costs the engine. Only where this machine owns the vehicle's state (the server, single player).
+static void burnFuel(uintptr_t v, Car& car, double toPipe, double flow, bool learning, double step) {
+    if (!car.host || oTankFuel < 0 || step <= 0) return;
+    float tank = get<float>(v + oTankFuel), cap = oTankCap >= 0 ? get<float>(v + oTankCap) : 0;
+    if (!(tank >= 0) || (cap > 0 && tank > cap * 1.01f) || tank > 100000) { car.tankLast = -1; return; }
+    if (car.tankLast >= 0 && learning) {
+        car.learnDrop += car.tankLast - tank; car.learnFlow += flow * step; car.learnT += step;
+        if (car.learnT >= 5) {
+            if (car.learnFlow > 0.5 && car.learnDrop > 0) {
+                double k = car.learnDrop / car.learnFlow;
+                car.burnK = car.burnK <= 0 ? k : car.burnK + 0.3 * (k - car.burnK);
+            }
+            car.learnDrop = car.learnFlow = car.learnT = 0;
+        }
+    } else car.learnDrop = car.learnFlow = car.learnT = 0;
+    double extra = car.burnK * toPipe * step;
+    if (extra > 0) {
+        tank = (float)(tank > extra ? tank - extra : 0);
+        wr(v + oTankFuel, &tank, 4);
+    }
+    car.tankLast = tank;
+}
+
 static void exhaust(uintptr_t v, uintptr_t engine, Car& car, const Tune& t, double ratio, float throttle, float pedal, bool als, double turbine, double dt, DWORD now, bool inView) {
     if (dt <= 0) return;
     uintptr_t data = get<uintptr_t>(engine + oData);
@@ -2243,6 +2271,7 @@ static void exhaust(uintptr_t v, uintptr_t engine, Car& car, const Tune& t, doub
         if (als) { toPipe += 0.45 * scale * (1 + t.boost); heatWant = 0.95; loss = 0.35; }
     }
     double step = dt > 0.4 ? 0.4 : dt;
+    burnFuel(v, car, toPipe, flow, on && !cut && ratio > 0.3, step);
     car.loss += (loss - car.loss) * (step / 0.2 > 1 ? 1 : step / 0.2);
     double tau = heatWant > car.egt ? 1.2 : 2.6;
     car.egt += ((heatWant > 1 ? 1 : heatWant) - car.egt) * (step / tau > 1 ? 1 : step / tau);
@@ -3112,6 +3141,12 @@ static DWORD WINAPI run(LPVOID) {
     for (int i = 0; i < 240 && !(api->find_object("NiagaraFunctionLibrary", "Default__NiagaraFunctionLibrary", "/Script/Niagara")
                                  && api->find_object("Class", "VerticalBox", "/Script/UMG")); i++) Sleep(500);
     uintptr_t cVeh = api->find_object("Class", "MTVehicle", "/Script/MotorTown");
+    if (uintptr_t sState = api->find_object("ScriptStruct", "MTVehicleState", "/Script/MotorTown"); sState && cVeh) {
+        int a = off(cVeh, "NetLC_VehicleState"), b = off(sState, "Fuel");
+        oTankFuel = a >= 0 && b >= 0 ? a + b : -1;
+        oTankCap = off(cVeh, "FuelTankCapacityInLiter");
+    }
+    MT_LOG("flames burn fuel: %s", oTankFuel >= 0 ? "yes" : "no -- MTVehicle.NetLC_VehicleState.Fuel not found");
     cVehCls = cVeh;
     {  // the car's customization list, which carries the tune to other players
         uintptr_t sCustom = api->find_object("ScriptStruct", "MTVehicleCustomization", "/Script/MotorTown");
