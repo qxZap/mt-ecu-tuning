@@ -2032,7 +2032,7 @@ static void tuneEngine(uintptr_t v, uintptr_t engine, Car& car, const Tune& t, D
     double burn = 1 + 0.35 * (f > 0 ? f : 0) - 0.1 * (f < 0 ? -f : 0) + 0.2 * (b > 0 ? b : 0);
     bool als = host && car.lagging;
     if (als) { heat *= 1.15; burn *= 1.25; }
-    double scale[14] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 + 0.08 * a, host ? 1 + 2 * t.cool : 1};
+    double scale[14] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 + 0.08 * a, host ? 1 + 0.5 * t.cool : 1};  // cooling boost: 0 as stock, 1 = 50% faster (the user, 11-22; was up to 3x)
     for (int fuel = 0; fuel < 2; fuel++) {
         scale[fuel * 6] = torque; scale[fuel * 6 + 1] = torque * (1 + 0.25 * b);
         scale[fuel * 6 + 2] = heat; scale[fuel * 6 + 3] = burn; scale[fuel * 6 + 4] = als ? 0.5 : 1;
