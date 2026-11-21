@@ -36,7 +36,9 @@
 // with a server, and other players do not see your settings.
 //
 // Shutting the throttle on a turbo plays its release, the stu-tu-tu (see flutterOf). The shot is
-// QX_Flutter_Shot, shipped in MoreTuning under Sounds/, which the server paks drop.
+// QX_Flutter_Shot, shipped (with the supercharger whine SW_QX_BlowerWhine) in the ECU Tuning pak, qxZap_ECUTuning_P,
+// under Sounds/, which the server paks drop. Without the pak the plugin runs, plays no flutter, and the whine falls back
+// to Teh's hellcathigh if that pack is in.
 //
 // Settings: Binaries\Win64\ecu_tuning.ini, [ECU], the defaults for an untuned vehicle:
 // Enabled (1), PopsPerSecond (8), MinRevs (0.55, share of the limiter), Volume (1), Flames
@@ -53,6 +55,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <unordered_map>
 #include <string>
 #include <vector>
 #include "../include/mt_plugin.hpp"
@@ -77,7 +80,7 @@ struct Slot { Ref owner; Pipe pipe; Vec dir, r1, r2, lightAt; Ref core, light; u
 struct Voice { Ref owner; DWORD at; float pitch, volume, lowpass, highpass; };
 struct Flutter { double pitch, low, high, volume; int shots; DWORD gap; int turbos; };
 struct Trim { float base, wrote; bool set; };
-struct Car { std::vector<Pipe> fire; int listed = 0; DWORD sockAt = 0; std::string sockSig; DWORD flutterAt = 0, ecuAt = 0, bangAt = 0, alsUntil = 0, liftAt = 0; bool lagging = false, host = false, pedalSeen = false, armed = false, throttleSeen = false, repSeen = false; double egt = 0.25, pipeFuel = 0, loss = 0, burn = 0, burnFor = 0, soak = 0; bool licked = false; double wall[5] = {650, 600, 560, 500, 450}, mouthK = 600, tipFuel = 0, tipO2 = 0.5; DWORD lastLight = 0, burnPause = 0, burnNext = 0; std::vector<DWORD> recent; float lastRatio = 0, guess = 0; DWORD seenAt = 0; Trim trim[14] = {}; Ref whine = {}, self = {}, voice[8] = {}; uintptr_t voiceSound[8] = {}; int nextVoice = 0; DWORD whineCheck = 0, whineAt = 0; int blower = -1; bool whineNear = false; float whineLevel = 0; float rpm = 0, fuel = 0, spool = 0; DWORD next = 0; bool read = false; DWORD readAgain = 0; std::string pipeSig; uintptr_t engine = 0; std::vector<Vec> wrote; std::vector<Pipe> pipes; std::vector<Slot> slots; std::vector<Ref> smokes;
+struct Car { std::vector<Pipe> fire; int listed = 0; DWORD sockAt = 0; std::string sockSig; DWORD flutterAt = 0, ecuAt = 0, bangAt = 0, alsUntil = 0, liftAt = 0; bool lagging = false, host = false, pedalSeen = false, armed = false, throttleSeen = false, repSeen = false; double egt = 0.25, pipeFuel = 0, loss = 0, burn = 0, burnFor = 0, soak = 0; bool licked = false; double wall[5] = {650, 600, 560, 500, 450}, mouthK = 600, tipFuel = 0, tipO2 = 0.5; DWORD lastLight = 0, burnPause = 0, burnNext = 0; std::vector<DWORD> recent; float lastRatio = 0, guess = 0; DWORD seenAt = 0; Trim trim[14] = {}; Ref whine = {}, self = {}, voice[8] = {}; uintptr_t voiceSound[8] = {}; int nextVoice = 0; DWORD whineCheck = 0, whineAt = 0; int blower = -1; bool whineNear = false; float whineLevel = 0; float rpm = 0, fuel = 0, spool = 0; DWORD next = 0; bool read = false; DWORD readAgain = 0; std::string pipeSig; uintptr_t engine = 0; std::vector<Vec> wrote; std::vector<Pipe> pipes; std::vector<Slot> slots; std::vector<Ref> smokes; double specL = 0; int specCyl = 0; char specLay = 0; DWORD specAt = 0; double vis = 1, visLogged = 0; int turboStage = 0;
     double burnK = 0, tankLast = -1, learnDrop = 0, learnFlow = 0, learnT = 0; };  // flames burn real fuel (exhaust())
 struct FStr { const wchar_t* data; int num, max; };
 struct Tune { double on, pops, revs, volume, flames, length, size, dpf, smoke, lasts, spread, chance, bang, timing, fuel, boost, lag, lagRevs, flameRevs, cool, life, density, shape, twin, gap, p1, p2, p3, p4, x1, x2, x3, x4, y1, y2, y3, y4, z1, z2, z3, z4, ovFuel, ovRetard, spark, decat, wide, header, back; bool own; };
@@ -195,8 +198,24 @@ static float kGhostGain = 1.6f;  // [ECU] FlameBrightness: its colour is its who
 // black blob over the sunlit road. The sun's height and strength (`daylight`, 0 night to 1 noon) lift
 // it by up to [ECU] FlameDaylight times more.
 static float kDayGain = 12;
+// [ECU] FlameDaylightCurve: the boost follows daylight to this power. Straight (1) it was x4.7 already at dawn, while the
+// camera's exposure had not come down yet, and the flames bloomed huge (2026-11-20, the Fortem at sunrise); squared (2)
+// it is x2.2 there and the same x13 at noon.
+static float kDayCurve = 2;
 static double daylight;
-static float flameGain() { return kGhostGain * (float)(1 + kDayGain * daylight); }
+static float flameGain() { return kGhostGain * (float)(1 + kDayGain * pow(daylight, kDayCurve)); }
+// Probe: the game's ReceiveSetPreExposure(PreExposure) on the player controller, logged with the daylight, to learn
+// whether the flames can follow the camera's real exposure instead of the sun.
+static int onPreExposure(uintptr_t, uintptr_t, void* parms, void*) {
+    static float last = -1; static DWORD at; static int told;
+    float e = parms ? *(float*)parms : -1;
+    DWORD now = GetTickCount();
+    if (told < 300 && (last < 0 || fabs(e - last) > 0.05f * fabs(last) || now - at > 30000)) {
+        told++; last = e; at = now;
+        MT_LOG("pre-exposure %.4f at daylight %.2f", e, daylight);
+    }
+    return 0;
+}
 // [ECU] FlameOpacity: how solid a flame piece is, times its own fade. Above 1 is less see-through.
 static float kOpacity = 1.35f;
 static float solid(double alpha) { double a = alpha * kOpacity; return (float)(a > 1 ? 1 : a); }
@@ -380,7 +399,12 @@ static void sendTune(uintptr_t car, const Tune& t) {
 }
 
 static Ref refOf(uintptr_t o);
-// A car's tune: your own as the panel holds it; anyone else's as the car carries it, else the ini's.
+// A car's tune: your own as the panel holds it; anyone else's as the car carries it. A car that carries none (a
+// player without the plugin, traffic) is stock: [ECU] OthersStock=1, the default (2026-11-20, the user: a vanilla
+// player's diesel smoked like a machine on this PC, from this PC's own defaults, SmokeAmount=5). OthersStock=0 gives
+// them the ini's defaults, as before.
+static Tune stockTune;
+static bool othersStock = true;
 static const Tune& tuneFor(uintptr_t v) {
     struct Carried { DWORD at; bool have; Tune t; Ref self; };
     // By the car itself, not its id: every car still without one (id 0) shared an entry and wore
@@ -393,7 +417,7 @@ static const Tune& tuneFor(uintptr_t v) {
     Carried& c = carried[v];
     Ref self = refOf(v);
     if (c.self.index != self.index || !c.at || now - c.at > 1000) { c.at = now | 1; c.have = readTune(v, c.t); c.self = self; }
-    return c.have ? c.t : tuneOf(id);
+    return c.have ? c.t : othersStock ? stockTune : tuneOf(id);
 }
 
 static uintptr_t loadAsset(const wchar_t* path) {
@@ -407,7 +431,7 @@ static uintptr_t loadAsset(const wchar_t* path) {
     api->process_event(systemCDO, fLoad, c);
     uintptr_t got = 0;
     memcpy(&got, c + pLoadRet, 8);
-    return got;
+    return rooted(got);
 }
 
 static uint64_t nameOf(const wchar_t* text) {
@@ -1316,6 +1340,7 @@ static void drawShape(Slot& s, double u, double time, double L, double fade, uns
 // Pooled per pipe and only shown or hidden: creating these per pop is object churn for the
 // garbage collector to stall on. The meshes are made in tickFlames, a few a frame.
 static void flame(uintptr_t v, Car& car, int i, const Tune& t, double energy, double seconds, double bigger, double flash, int kind, double ratio, int shape) {
+    bigger *= car.vis;  // the engine's own size
     if (!ball || !glow || !canFlame) return;
     Slot& s = car.slots[i];
     if (s.shape == 1) hideClassic(s);
@@ -1340,7 +1365,7 @@ static void flame(uintptr_t v, Car& car, int i, const Tune& t, double energy, do
     // The rows are relative to their defaults (size 0.2, length 0.04, spread 0.2): size is how
     // thick, length how far it reaches, spread how wide the branches open, density how many.
     s.size = 1.05 * bigger * t.size * k.size * (1 + 0.25 * (s.rich > 0 ? s.rich : 0));
-    s.reach = 0.75 * t.length / 0.04 * k.reach * (0.7 + 0.6 * energy);  // a pipe fires the same with others switched off
+    s.reach = 0.75 * t.length / 0.04 * k.reach * (0.7 + 0.6 * energy) * car.vis;  // the engine's size reaches too (11-21: only the thickness had it)
     s.spread = 0.7 * t.spread / 0.2 * (t.wide != 0 ? 1.4 : 1);  // wide tips fan it
     s.wobble = k.wobble;
     s.pace = k.pace;
@@ -1477,7 +1502,9 @@ static void tickFlames(DWORD now, double dt) {
 // The classic flame (Flame shape: Classic): cones and a flamethrower of streaks.
 // Pooled per pipe and only shown or hidden: creating these per pop is object churn for the
 // garbage collector to stall on. Traffic gets a smaller pool than the player.
+static bool screenWatch;  // the garage screen's Construct is watched: no polling for it
 static void flameClassic(uintptr_t v, Car& car, int i, const Tune& t, double energy, double seconds, double bigger, double flash, int style, int kind, double ratio) {
+    bigger *= car.vis;  // the engine's own size
     if (!cone || !ball || !glow || !canFlame) return;
     Slot& s = car.slots[i];
     if (s.shape != 1) { hideFlame(s); s.shape = 1; }  // the tongues of a burst still on the pipe
@@ -2244,14 +2271,55 @@ static void burnFuel(uintptr_t v, uintptr_t data, Car& car, double toPipe, doubl
     car.tankLast = tank;
 }
 
+// The engine itself (2026-11-12, the user: flames "dependent on the cylinders and how big an engine is"). MoreTuning's
+// EngineSpecs/specs.py lists every combustion engine row's cylinders, litres and layout; an engine not listed (another
+// mod's) is estimated from its power and fuel. Displacement sets how much gas and fuel go down the pipe, cylinders the
+// rhythm (a twin pops slow and big, a V12 crackles fast and fine), a rotary runs rich into a short pipe and burns more.
+struct EngineSpec { const char* key; int cyl; double litres; char layout; };
+static const EngineSpec ENGINE_SPECS[] = {
+#include "engine_specs.inc"
+};
+static void engineSpec(uintptr_t v, Car& car, double hp, bool diesel) {
+    std::string turbo = fittedPart(v, 7);  // the turbo's stage, off its row name (Turbocharger_Compound_Stage3): 0 none or unstaged
+    size_t st = turbo.find("Stage");
+    car.turboStage = st != std::string::npos && st + 5 < turbo.size() && isdigit((unsigned char)turbo[st + 5]) ? turbo[st + 5] - '0' : 0;
+    std::string key = fittedPart(v, 2);  // EMTVehiclePartSlot::Engine
+    for (auto& e : ENGINE_SPECS)
+        if (key == e.key) { car.specL = e.litres; car.specCyl = e.cyl; car.specLay = e.layout; return; }
+    double l = hp / (diesel ? 32 : 80);  // shortcut: a modern engine's power per litre; list the row in specs.py instead
+    l = l < 0.1 ? 0.1 : l > 20 ? 20 : l;
+    car.specL = l;
+    car.specCyl = l < 0.3 ? 1 : l < 0.8 ? 2 : l < 2.6 ? 4 : l < 3.8 ? 6 : l < 7.5 ? 8 : 12;
+    car.specLay = car.specCyl >= 8 ? 'V' : 'I';
+}
+
 static void exhaust(uintptr_t v, uintptr_t engine, Car& car, const Tune& t, double ratio, float throttle, float pedal, bool als, double turbine, double dt, DWORD now, bool inView) {
     if (dt <= 0) return;
     uintptr_t data = get<uintptr_t>(engine + oData);
-    double hp = oTorque >= 0 ? get<float>(data + oProp + oTorque) * get<float>(data + oProp + oMax) * 0.8 / 7121 : 400;
-    double scale = hp / 400;
-    scale = scale < 0.2 ? 0.2 : scale > 4 ? 4 : scale;
+    // MaxTorque is N*m x 10000 (Kart_10HP: 120000 at 9000 rpm = 12 hp); without the /1e4 every engine read millions of hp
+    // and the flame scale sat at its cap of 4 (11-21: the Fortem's flames far too long)
+    double hp = oTorque >= 0 ? get<float>(data + oProp + oTorque) / 1e4 * get<float>(data + oProp + oMax) * 0.8 / 7121 : 400;
     int map = (engineHas(v) & DIESEL) ? 6 : 0;
+    if (!car.specCyl || (int)(now - car.specAt) >= 0) {  // a swap in the garage shows within 5 s
+        car.specAt = now + 5000;
+        engineSpec(v, car, hp, map != 0);
+    }
+    // gas per lift goes with the displacement, its push with the power: the mean of the two, 1 = a 400 hp 4-litre
+    double scale = sqrt((hp / 400) * (car.specL / 4));
+    scale = scale < 0.15 ? 0.15 : scale > 4 ? 4 : scale;
+    // how big this engine's flame is DRAWN: a bang's size is judged against the engine (1 = a proper bang for it), so
+    // without this every engine's full bang drew the same size -- and once the power read right (11-21) the Fortem's
+    // V12 hit 1 on every bang, its flames too long. It sets how thick AND how far.
+    car.vis = 0.22 + 0.2 * scale; car.vis = car.vis < 0.4 ? 0.4 : car.vis > 0.85 ? 0.85 : car.vis;  // Fortem V12 0.48 (x1.12 stage-1 turbo = 0.54), 2JZ 0.4 (stage-3 Magis x1.98 = 0.79), GM632 0.77
+    // the firing rhythm: few cylinders, fewer and bigger shots; many, a fast fine crackle
+    double cylK = sqrt(4.0 / (car.specCyl > 0 ? car.specCyl : 4));
+    double rotary = car.specLay == 'R' ? 1.6 : 1;
     double boost = turbine > 0 ? clamp01(turbine * get<float>(engine + oTrim[map + 5]) / 2) : 0;
+    // ...and the tune on top: boost, a blower and overrun fuel all push more through the pipe, so a hard-tuned small
+    // engine out-flames a stock big one (11-21: the stage-3 Magis looked tiny next to the Fortem)
+    // the hardware's stage, not the boost slider: a stage-1 Fortem with the boost up kept growing (11-22)
+    double tuned = 1 + 0.12 * car.turboStage + 0.15 * (car.blower > 0 ? car.blower : 0) + 0.3 * t.ovFuel;
+    car.vis *= tuned > 1.8 ? 1.8 : tuned;
     double lam = 1.15 - 0.35 * t.fuel, retard = above0((0.5 - t.timing) * 2), advance = above0((t.timing - 0.5) * 2);
     bool on = pedal > 0.5f, lifted = pedal < 0.3f;
     // At the limit with the pedal down it is bouncing off the limiter. The engine's own throttle does
@@ -2276,6 +2344,7 @@ static void exhaust(uintptr_t v, uintptr_t engine, Car& car, const Tune& t, doub
         } else heatWant = 0.22 + 0.25 * exp(-since / 1.2);
         if (als) { toPipe += 0.45 * scale * (1 + t.boost); heatWant = 0.95; loss = 0.35; }
     }
+    toPipe *= rotary;
     double step = dt > 0.4 ? 0.4 : dt;
     burnFuel(v, data, car, toPipe, flow, on && !cut && ratio > 0.3, step);
     car.loss += (loss - car.loss) * (step / 0.2 > 1 ? 1 : step / 0.2);
@@ -2337,13 +2406,16 @@ static void exhaust(uintptr_t v, uintptr_t engine, Car& car, const Tune& t, doub
         }
     }
     bool big = car.pipeFuel > level;
-    double rate = pulling || justLifted ? 0 : (big ? 30 : lifted ? 9 : 4) * smooth(0.32, 0.62, car.egt) * air * car.pipeFuel / (car.pipeFuel + 0.03);
+    double rate = pulling || justLifted ? 0 : (big ? 30 : lifted ? 9 : 4) / cylK * smooth(0.32, 0.62, car.egt) * air * car.pipeFuel / (car.pipeFuel + 0.03);
     if (ratio < 0.05) { car.pipeFuel -= car.pipeFuel * clamp01(step * 3); rate = 0; }  // engine stopped: nothing pushes it out, it does not light
-    if (car.pipeFuel > 0.002 && roll() < 1 - exp(-rate * step) && (int)(now - car.lastLight) > (big ? 40 : 90)) {
-        double amount = car.pipeFuel * (big ? 0.85 + 0.15 * roll() : 0.3 + 0.4 * roll());
+    int gap = (int)((big ? 40 : 90) * cylK);  // a twin's pops are spaced, a V12's run together
+    if (car.pipeFuel > 0.002 && roll() < 1 - exp(-rate * step) && (int)(now - car.lastLight) > gap) {
+        double share = (0.3 + 0.4 * roll()) * cylK;
+        double amount = car.pipeFuel * (big ? 0.85 + 0.15 * roll() : share > 0.9 ? 0.9 : share);
         car.pipeFuel -= amount;
         car.lastLight = now;
         if (inView) lightPipe(v, engine, car, t, amount, scale, ratio, pedal, boost, lam, retard, advance, als, cut, now);
+        if (fabs(car.vis - car.visLogged) > 0.02 && loggingOn()) { car.visLogged = car.vis; MT_LOG("engine %s: %d cyl %c, %.2f l, flame scale %.2f, drawn x%.2f (tune incl.), rhythm x%.2f", fittedPart(v, 2).c_str(), car.specCyl, car.specLay ? car.specLay : '?', car.specL, scale, car.vis, 1 / cylK); }
         if (big) { car.burnPause = now + 450; car.burn *= 0.3; }  // a bang blows any flame still at the pipe out
     }
     // The burn itself: a jet of cones off every pipe, refreshed so it licks and grows.
@@ -2376,6 +2448,11 @@ static void one(uintptr_t v, uintptr_t pawn, const Vec& me, double dt, DWORD now
     if (maxRpm <= 0 || !has) return;  // electric: no map, no exhaust
 
     const Tune& t = tuneFor(v);
+    if (&t == &stockTune) {  // nothing of ours on it: the game's own exhaust, sound and power
+        auto known = cars.find(v);
+        if (known != cars.end()) { tuneEngine(v, engine, known->second, stockTune, now); stopSmoke(known->second); cars.erase(known); }  // trims back first
+        return;
+    }
     Car& car = cars[v];
     // A new car the game put where a gone one was: its pipes, sockets and slots are not this one's.
     if (car.self.ptr && car.self.index != get<int>(v + L().obj_index)) { stopSmoke(car); car = Car{}; }
@@ -2462,7 +2539,19 @@ static void one(uintptr_t v, uintptr_t pawn, const Vec& me, double dt, DWORD now
     if ((has & DIESEL) && (t.dpf != 0 || !car.smokes.empty())) tickSmoke(v, engine, car, t, rpm, load, inRange(v, pawn, me));
 
     if (prob <= 0) return;  // the game's own word on whether this engine can fire in the pipe at all
-    if (get<int>(engine + oNative + 8)) { int none = 0; wr(engine + oNative + 8, &none, 4); }  // silences the game's own
+    // Silences the game's own afterfire. It used to set the array's count to 0 every frame, which hid the components
+    // from GC while the engine still used them (2026-11-12 crash hunt); now each one is just muted where it stands.
+    {
+        static int oVolMul = -2;
+        if (oVolMul == -2) { uintptr_t cAC = api->find_object("Class", "AudioComponent", "/Script/Engine"); oVolMul = cAC ? off(cAC, "VolumeMultiplier") : -1; }
+        uintptr_t arr = get<uintptr_t>(engine + oNative);
+        int n = get<int>(engine + oNative + 8);
+        for (int i = 0; arr && fWhineVolume && oVolMul >= 0 && i < n && i < 16; i++) {
+            uintptr_t ac = get<uintptr_t>(arr + 8ull * i);
+            if (!ac || api->object(get<int>(ac + L().obj_index, -1)) != ac) continue;
+            if (get<float>(ac + oVolMul) != 0) { float zero = 0; api->process_event(ac, fWhineVolume, &zero); }
+        }
+    }
     exhaust(v, engine, car, t, ratio, throttle, pedal, lagging, oTurboSpeedRead(engine, speed, turbo), dt, now, inRange(v, pawn, me));
 }
 
@@ -2680,6 +2769,10 @@ static void tickPanel(DWORD now) {
     uintptr_t vehicle = get<uintptr_t>(screen + oVehicle);
     int64_t id = vehicle ? get<int64_t>(vehicle + oId) : 0;
     if (!id) { if (waits++ == 0) MT_LOG("menu %lu: waiting, the screen has no vehicle id yet", now); return; }
+    if (isBoatVehicle(vehicle)) {  // no ECU tuning on a boat (the user, 2026-11-13): no button, rows closed if open
+        if (panel.open && alive(panel.screen)) closeRows();
+        return;
+    }
     if (panel.screen.ptr != screen) {
         if (panel.dirty) saveTune(panel.id, tuneOf(panel.id));
         if (panel.open && alive(panel.screen)) closeRows();  // else they stay on the old screen beside new ones
@@ -2922,7 +3015,7 @@ static void tickDaylight(DWORD now) {
     static double said = -1;
     if (fabs(best - said) > 0.1) {
         said = best;
-        MT_LOG("daylight %.2f (sun up %.2f, intensity %.2f of %.2f, %d lights): flames x%.1f", best, bestUp, bestI, strongest, (int)suns.size(), 1 + kDayGain * best);
+        MT_LOG("daylight %.2f (sun up %.2f, intensity %.2f of %.2f, %d lights): flames x%.1f", best, bestUp, bestI, strongest, (int)suns.size(), 1 + kDayGain * pow(best, kDayCurve));
     }
     daylight = best;
 }
@@ -3099,6 +3192,7 @@ static DWORD WINAPI run(LPVOID) {
         for (const wchar_t* n = names; *n; n += wcslen(n) + 1) tuned.insert(n);
     }
     base.on = iniNum(L"ecu_tuning.ini", L"ECU", L"Enabled", 1);
+    othersStock = iniNum(L"ecu_tuning.ini", L"ECU", L"OthersStock", 1) != 0;
     base.pops = iniNum(L"ecu_tuning.ini", L"ECU", L"PopRate", 5);
     base.revs = iniNum(L"ecu_tuning.ini", L"ECU", L"MinRevs", 0.55);
     base.volume = iniNum(L"ecu_tuning.ini", L"ECU", L"PopVolume", 2);
@@ -3126,6 +3220,9 @@ static DWORD WINAPI run(LPVOID) {
     base.flameRevs = iniNum(L"ecu_tuning.ini", L"ECU", L"FlameRevs", 0.6);
     kGhostGain = (float)iniNum(L"ecu_tuning.ini", L"ECU", L"FlameBrightness", 1.6);
     kDayGain = (float)iniNum(L"ecu_tuning.ini", L"ECU", L"FlameDaylight", 12);
+    kDayCurve = (float)iniNum(L"ecu_tuning.ini", L"ECU", L"FlameDaylightCurve", 2);
+    { static const char* kPre[] = {"ReceiveSetPreExposure"};
+      MT_LOG("pre-exposure probe %s", api->watch_functions(kPre, 1, onPreExposure, nullptr) ? "on" : "not found"); }
     kOpacity = (float)iniNum(L"ecu_tuning.ini", L"ECU", L"FlameOpacity", 1.35);
     fForward = api->find_object("Function", "GetForwardVector", "SceneComponent");
     oIntensity = off(api->find_object("Class", "LightComponentBase", "/Script/Engine"), "Intensity");
@@ -3372,7 +3469,7 @@ static DWORD WINAPI run(LPVOID) {
             if (fields[i] < 0) { MT_LOG("no Exhaust menu: garage field %d of the list not found -- pops run on the ini defaults", i); canTune = false; }
     }
     static const char* kConstruct[] = {"Construct"};
-    if (canTune) { gScreenClass = cScreen; MT_LOG("garage screen watch %s", api->watch_functions(kConstruct, 1, onBuilt, nullptr) ? "on" : "OFF -- scans only"); }
+    if (canTune) { gScreenClass = cScreen; screenWatch = api->watch_functions(kConstruct, 1, onBuilt, nullptr) != 0; MT_LOG("garage screen watch %s", screenWatch ? "on" : "OFF -- scans only"); }
 
     auto range = find_sig("48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 0F B6 44 24 50 48 8B D9 88 81 ?? ?? ?? ?? F3 0F 11 89");
     auto value = find_sig("40 53 48 83 EC 20 80 B9 ?? ?? ?? ?? 00 48 8B D9 F3 0F 10 81 ?? ?? ?? ?? F3 0F 5D C1 F3 0F 5F 81");
@@ -3402,6 +3499,7 @@ static DWORD WINAPI run(LPVOID) {
     MT_LOG("daylight from %p, GetForwardVector %p, Intensity at %d", (void*)cSun, (void*)fForward, oIntensity);
     CloseHandle(CreateThread(nullptr, 0, pump, nullptr, 0, nullptr));
     for (int beat = 0;; beat++) {
+        if (api->stopping()) return 0;   // the game is closing: this thread ends with it
         {
             std::vector<Ref> got;
             { std::lock_guard<std::mutex> g(builtLock); got.swap(built); }
@@ -3419,7 +3517,7 @@ static DWORD WINAPI run(LPVOID) {
                     }
             }
         }
-        if (beat % 120 != 0 && beat % 6 == 0 && cButton && !screenClasses.empty()) {  // about 100 ms
+        if (!screenWatch && beat % 120 != 0 && beat % 6 == 0 && cButton && !screenClasses.empty()) {  // about 100 ms, only without the watch
             static int timed;
             DWORD from = GetTickCount();
             std::vector<Ref> found;
@@ -3438,17 +3536,28 @@ static DWORD WINAPI run(LPVOID) {
         if (beat % 120 == 0) {  // about two seconds
             std::vector<Ref> v, w, m, sun;
             bool lookForNotice = !warned && beat < 120 * 90;  // the notice comes up in the first minutes
+            // what a class is, worked out once: 0 nothing, 1 sun, 2 car (a boat is not: the user, 2026-11-13), 3 rich text, 4 garage screen
+            static std::unordered_map<uintptr_t, uint8_t> kind;
             for (int i = 0, n = api->num_objects(); i < n; i++) {
                 uintptr_t o = api->object(i);
                 if (!o) continue;
+                uintptr_t c = classOf(o);
+                auto k = kind.find(c);
+                if (k == kind.end()) {
+                    uint8_t t = cSun && c == cSun ? 1 : api->is_a(c, cVeh) ? (isBoatVehicle(o) ? 0 : 2) : cRich && c == cRich ? 3
+                              : canTune && api->is_a(c, cScreen) ? 4 : 0;
+                    k = kind.emplace(c, t).first;
+                }
                 if (isCDO(o)) {  // until the screen's class is known (a screen found below teaches it too)
-                    if (canTune && screenClasses.empty() && classOf(o) != cScreen && api->is_a(classOf(o), cScreen)) screenClasses.push_back(classOf(o));
+                    if (k->second == 4 && screenClasses.empty() && c != cScreen) screenClasses.push_back(c);
                     continue;
                 }
-                if (cSun && classOf(o) == cSun) sun.push_back({i, o});
-                else if (api->is_a(classOf(o), cVeh)) v.push_back({i, o});
-                else if (lookForNotice && cRich && classOf(o) == cRich && !richRead.count(o)) m.push_back({i, o});
-                else if (canTune && api->is_a(classOf(o), cScreen)) w.push_back({i, o});
+                switch (k->second) {
+                    case 1: sun.push_back({i, o}); break;
+                    case 2: v.push_back({i, o}); break;
+                    case 3: if (lookForNotice && !richRead.count(o)) m.push_back({i, o}); break;
+                    case 4: w.push_back({i, o}); break;
+                }
             }
             if (canTune && !cButton && !w.empty()) {  // the blueprints are only there once a garage has opened
                 cSetting = api->find_object("WidgetBlueprintGeneratedClass", "W_Setting_C", "/Game/UI/Component/W_Setting");
@@ -3472,7 +3581,7 @@ static DWORD WINAPI run(LPVOID) {
             for (auto c = cars.begin(); c != cars.end();) c = here.count(c->first) ? std::next(c) : cars.erase(c);
             if (ex && !smoke) { smoke = ex; MT_LOG("smoke %s", objName(smoke).c_str()); }
         }
-        if (beat % 1800 == 900) probeSave();  // about 30 s
+        if (beat % 18000 == 900) probeSave();  // about 5 min: a probe, not a feature
         Sleep(16);
     }
 }
