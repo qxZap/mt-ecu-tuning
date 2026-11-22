@@ -1314,7 +1314,9 @@ static int shapePieces(const Slot& s, double u, double time, double L, double W,
 // A flame piece is a 3D tongue when they shipped (every shape: most bursts are Pulses and Fan, not Classic -- 11-22),
 // else the sphere. Same pivot and size at scale 1, so the shapes place them as they did the sphere.
 static uintptr_t pieceMesh(int k) { return qxTongue[0] ? qxTongue[k % 6] : ball; }
-static uintptr_t pieceMat() { return qxTongue[0] ? qxMat : layer(); }
+// The game's own see-through flame material on them: ours (M_QX_Flame) drew nothing in game -- bangs heard, flames
+// missing (11-22); a material cooked outside the game must match its renderer settings, the game's own always does.
+static uintptr_t pieceMat() { return layer(); }
 static void flicker(const Ref& r, unsigned frame, int k) {  // the tongue changes shape every 4 frames
     if (!qxTongue[0] || (frame + k) % 4 != 0 || !alive(r)) return;
     unsigned char m[0x10] = {0};
@@ -1563,7 +1565,7 @@ static void flameClassic(uintptr_t v, Car& car, int i, const Tune& t, double ene
     for (int c = 0; c < s.layers; c++)
         if (!alive(s.cone[c])) {  // every layer a flame tongue when shipped, the core (1) too: it is most of what shows (11-22)
             bool qx = qxTongue[0] != 0;
-            s.cone[c] = refOf(makeMesh(v, qx ? qxTongue[c % 6] : cone, c == 1 ? glow : qx ? qxMat : layer(), pipe, 1, 0.5f, 0.1f));
+            s.cone[c] = refOf(makeMesh(v, qx ? qxTongue[c % 6] : cone, c == 1 ? glow : layer(), pipe, 1, 0.5f, 0.1f));
             s.coneMid[c] = lastMid;
         }
     s.glow = canGlow ? lightSpot(car, i, s.lightAt) : 0;
@@ -1696,8 +1698,7 @@ static void tickClassic(DWORD now, double dt) {
                     double inner = 0.55 + 0.45 * o, length = s.coneLength * inner * shape * (0.85 + 0.3 * roll()), half = length * 50;
                     double along = 0.02 + 0.28 * o + u * 0.6 + (c > 1 ? 0.1 * s.detail * sin(t * 9 + c * 1.7 + s.phase[c % 3]) : 0);
                     Vec at{s.pipe.at.x + s.dir.x * half, s.pipe.at.y + s.dir.y * half, s.pipe.at.z + s.dir.z * half};
-                    double a = qxTongue[0] ? (c == 1 ? 0.95 : c == 0 ? 0.5 : 0.35) * shape  // tongues: the core bright, the shell soft
-                             : c == 1 || !ghost ? -1 : (c == 0 ? 0.45 : 0.3) * shape;
+                    double a = c == 1 || !ghost ? -1 : (c == 0 ? 0.45 : 0.3) * shape;  // the core opaque and lit, the layers see-through
                     heatColor(s.coneMid[c], s, along < 0 ? 0 : along > 1 ? 1 : along, 0.4 * o, a);
                     placeSeg(s.cone[c], at, s.dir, s.size * 0.22 * inner, length);
                     if (qxTongue[0] && (frame + c) % 4 == 0) {  // the tongue changes shape: it flickers
