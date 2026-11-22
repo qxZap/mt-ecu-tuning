@@ -75,7 +75,7 @@ enum { MAX_LAYERS = 5 };  // classic: cone 0 the outer shell, 1 the opaque core,
 // shape 0: tongues; 1: classic, which uses cone*, sparks and the fields after pace.
 enum { POOL = MAX_TONGUES * MAX_SEGS };
 struct Slot { Ref owner; Pipe pipe; Vec dir, r1, r2, lightAt; Ref core, light; uintptr_t coreMid; double glow, flash, advance, rich, size, reach, spread, energy, detail, lod, ratio, wobble, pace,
-    coneLength, style, dense, debt, swirl, spin, phase[3]; Glow flameHue; Ref cone[MAX_LAYERS]; uintptr_t coneMid[MAX_LAYERS]; DWORD start, end; int kind, tongues, segs, layers, shape, count; double rnd[POOL][4];
+    coneLength, style, dense, debt, swirl, spin, phase[3]; Glow flameHue; Ref cone[MAX_LAYERS]; uintptr_t coneMid[MAX_LAYERS]; Ref sec[MAX_LAYERS][2]; uintptr_t secMid[MAX_LAYERS][2]; DWORD start, end; int kind, tongues, segs, layers, shape, count; double rnd[POOL][4];
     bool on, culled, coreVis, coreParked, idle; Tongue tongue[MAX_TONGUES]; std::vector<Spark> sparks; };
 struct Voice { Ref owner; DWORD at; float pitch, volume, lowpass, highpass; };
 struct Flutter { double pitch, low, high, volume; int shots; DWORD gap; int turbos; };
@@ -194,7 +194,7 @@ static uintptr_t fCreate, fAddChild, fChildIndex, fChildAt, fChildCount, fToText
 static uintptr_t sound, cone, ball, glow, ghost, smoke, playerNow;
 // The 3D flame (11-22): six tongue meshes and their glowing material, in qxZap_ECUTuning_P (FlameModels/). They stand
 // in for the engine's cone in the Classic flame's see-through layers, laid out as it is; without the pak, the cone.
-static uintptr_t qxMat, qxTongue[6];
+static uintptr_t qxMat, qxTongue[6], qxSec[6][3];  // qxSec: each tongue in three sections, pipe end / body / tip (11-22)
 static bool qxTried;
 static uint64_t colorName, opacityName, depthBiasName;
 // M_GhostCar is translucent and unlit, so layers of it read as a body of flame where the opaque
@@ -1177,6 +1177,7 @@ static Vec pathAt(const Slot& s, const Tongue& g, double a, double L, double tim
 
 static void hideClassic(Slot& s) {
     for (Ref& r : s.cone) showMesh(r, false);
+    for (auto& row : s.sec) for (Ref& r : row) showMesh(r, false);
     for (Spark& p : s.sparks)
         if (p.shown) { p.live = false; p.shown = false; showMesh(p.c, false); }
 }
@@ -1565,9 +1566,12 @@ static void flameClassic(uintptr_t v, Car& car, int i, const Tune& t, double ene
     for (int c = 0; c < s.layers; c++)
         if (!alive(s.cone[c])) {  // every layer a flame tongue when shipped, the core (1) too: it is most of what shows (11-22)
             bool qx = qxTongue[0] != 0;
-            s.cone[c] = refOf(makeMesh(v, qx ? qxTongue[c % 6] : cone, c == 1 ? glow : layer(), pipe, 1, 0.5f, 0.1f));
+            s.cone[c] = refOf(makeMesh(v, qxSec[0][0] ? qxSec[c % 6][0] : qx ? qxTongue[c % 6] : cone, c == 1 ? glow : layer(), pipe, 1, 0.5f, 0.1f));
             s.coneMid[c] = lastMid;
         }
+    for (int c = 0; c < s.layers && qxSec[0][0]; c++)  // the body and the tip, each its own colour
+        for (int k = 0; k < 2; k++)
+            if (!alive(s.sec[c][k])) { s.sec[c][k] = refOf(makeMesh(v, qxSec[c % 6][k + 1], c == 1 ? glow : layer(), pipe, 1, 0.5f, 0.1f)); s.secMid[c][k] = lastMid; }
     s.glow = canGlow ? lightSpot(car, i, s.lightAt) : 0;
     if (s.glow > 0 && !alive(s.light)) s.light = refOf(makeLight(v, 150 + 700 * s.size));
     // The rows are relative to their defaults (length 0.04, spread 0.2, size 0.2), so each one
@@ -1578,7 +1582,10 @@ static void flameClassic(uintptr_t v, Car& car, int i, const Tune& t, double ene
     s.end = now + (DWORD)(seconds * 1000 < 34 ? 34 : seconds * 1000);
     if (seconds < 0.05 && !s.on && style != 1) s.debt = 12 * s.dense;
     s.culled = s.lod == 0;
-    for (int c = 0; c < MAX_LAYERS; c++) showMesh(s.cone[c], c < s.layers && style != 2 && !s.culled);
+    for (int c = 0; c < MAX_LAYERS; c++) {
+        showMesh(s.cone[c], c < s.layers && style != 2 && !s.culled);
+        for (Ref& r : s.sec[c]) showMesh(r, c < s.layers && style != 2 && !s.culled);
+    }
     showMesh(s.light, s.glow > 0);
     s.idle = false;
     s.on = true;
@@ -1656,10 +1663,12 @@ static void tickClassic(DWORD now, double dt) {
             if (s.on && (int)(now - s.end) >= 0) {
                 s.on = false;
                 for (Ref& c : s.cone) park(c);
+                for (auto& row : s.sec) for (Ref& c : row) park(c);
                 dimLight(s);
             }
             if (!s.on && !s.idle && (int)(now - s.end) > 1000) {  // quiet for a second: hidden for real
                 for (Ref& c : s.cone) showMesh(c, false);
+                for (auto& row : s.sec) for (Ref& c : row) showMesh(c, false);
                 showMesh(s.light, false);
                 for (Spark& p : s.sparks)
                     if (p.shown && !p.live) { p.shown = false; showMesh(p.c, false); }
@@ -1670,7 +1679,7 @@ static void tickClassic(DWORD now, double dt) {
                 bool cull = s.lod == 0;
                 if (cull != s.culled) {  // the light stays: it lands on road the camera can see
                     s.culled = cull;
-                    for (int c = 0; c < s.layers; c++) showMesh(s.cone[c], !cull && s.style != 2);
+                    for (int c = 0; c < s.layers; c++) { showMesh(s.cone[c], !cull && s.style != 2); for (Ref& r : s.sec[c]) showMesh(r, !cull && s.style != 2); }
                     if (cull)
                         for (Spark& p : s.sparks)
                             if (p.live) { p.live = false; p.shown = false; showMesh(p.c, false); }
@@ -1699,6 +1708,29 @@ static void tickClassic(DWORD now, double dt) {
                     double along = 0.02 + 0.28 * o + u * 0.6 + (c > 1 ? 0.1 * s.detail * sin(t * 9 + c * 1.7 + s.phase[c % 3]) : 0);
                     Vec at{s.pipe.at.x + s.dir.x * half, s.pipe.at.y + s.dir.y * half, s.pipe.at.z + s.dir.z * half};
                     double a = c == 1 || !ghost ? -1 : (c == 0 ? 0.45 : 0.3) * shape;  // the core opaque and lit, the layers see-through
+                    if (qxSec[0][0]) {
+                        // In sections (11-22): each at its own place on the heat gradient, so a flame starts at the pipe
+                        // the colour of its hottest gas and ends the colour of its coolest, and the whole of it cools
+                        // as the burst dies. Each section sits in the tongue's own frame: one transform places all three.
+                        double base = 0.02 + 0.2 * o + 0.45 * u + (c > 1 ? 0.1 * s.detail * sin(t * 9 + c * 1.7 + s.phase[c % 3]) : 0);
+                        static const double STEP[3] = {0, 0.3, 0.6}, FADE[3] = {1, 0.9, 0.7};  // the tip thins out
+                        for (int k = 0; k < 3; k++) {
+                            double ak = base + STEP[k];
+                            heatColor(k ? s.secMid[c][k - 1] : s.coneMid[c], s, ak < 0 ? 0 : ak > 1 ? 1 : ak, 0.4 * o, a < 0 ? a : a * FADE[k]);
+                            placeSeg(k ? s.sec[c][k - 1] : s.cone[c], at, s.dir, s.size * 0.22 * inner, length);
+                        }
+                        if ((frame + c) % 4 == 0) {  // it flickers: all three sections take the same new shape, so they still meet
+                            int vi = (frame / 4 + c * 2 + rand()) % 6;
+                            for (int k = 0; k < 3; k++) {
+                                const Ref& rk = k ? s.sec[c][k - 1] : s.cone[c];
+                                if (!alive(rk)) continue;
+                                unsigned char m[0x10] = {0};
+                                memcpy(m, &qxSec[vi][k], 8);
+                                api->process_event(rk.ptr, fMesh, m);
+                            }
+                        }
+                        continue;
+                    }
                     heatColor(s.coneMid[c], s, along < 0 ? 0 : along > 1 ? 1 : along, 0.4 * o, a);
                     placeSeg(s.cone[c], at, s.dir, s.size * 0.22 * inner, length);
                     if (qxTongue[0] && (frame + c) % 4 == 0) {  // the tongue changes shape: it flickers
@@ -2167,6 +2199,14 @@ static bool flameAssets() {
             qxTongue[n] = loadAsset(path);
         }
         if (!qxTongue[5]) qxTongue[0] = 0;  // all six or none
+        for (int n = 0; n < 6 && qxTongue[0]; n++)
+            for (int k = 0; k < 3; k++) {
+                wchar_t path[112];
+                swprintf_s(path, L"/Game/ECUTuning/Flames/SM_QX_Tongue_%d_%d.SM_QX_Tongue_%d_%d", n, k, n, k);
+                qxSec[n][k] = loadAsset(path);
+            }
+        if (!qxSec[5][2]) qxSec[0][0] = 0;  // all eighteen or none: whole tongues, one colour each
+        MT_LOG("flame sections %s", qxSec[0][0] ? "on: a colour from the pipe to the tip" : "not found -- one colour a tongue");
         MT_LOG("3D flames %s", qxTongue[0] ? "on" : "not found (qxZap_ECUTuning_P) -- cones");
     }
     if (sound && ball && glow && cone && (ghost || ghostTried)) return true;
@@ -2983,6 +3023,24 @@ static void keepLoaded() {
         {&qxTongue[3], L"/Game/ECUTuning/Flames/SM_QX_Tongue_3.SM_QX_Tongue_3"},
         {&qxTongue[4], L"/Game/ECUTuning/Flames/SM_QX_Tongue_4.SM_QX_Tongue_4"},
         {&qxTongue[5], L"/Game/ECUTuning/Flames/SM_QX_Tongue_5.SM_QX_Tongue_5"},
+        {&qxSec[0][0], L"/Game/ECUTuning/Flames/SM_QX_Tongue_0_0.SM_QX_Tongue_0_0"},
+        {&qxSec[0][1], L"/Game/ECUTuning/Flames/SM_QX_Tongue_0_1.SM_QX_Tongue_0_1"},
+        {&qxSec[0][2], L"/Game/ECUTuning/Flames/SM_QX_Tongue_0_2.SM_QX_Tongue_0_2"},
+        {&qxSec[1][0], L"/Game/ECUTuning/Flames/SM_QX_Tongue_1_0.SM_QX_Tongue_1_0"},
+        {&qxSec[1][1], L"/Game/ECUTuning/Flames/SM_QX_Tongue_1_1.SM_QX_Tongue_1_1"},
+        {&qxSec[1][2], L"/Game/ECUTuning/Flames/SM_QX_Tongue_1_2.SM_QX_Tongue_1_2"},
+        {&qxSec[2][0], L"/Game/ECUTuning/Flames/SM_QX_Tongue_2_0.SM_QX_Tongue_2_0"},
+        {&qxSec[2][1], L"/Game/ECUTuning/Flames/SM_QX_Tongue_2_1.SM_QX_Tongue_2_1"},
+        {&qxSec[2][2], L"/Game/ECUTuning/Flames/SM_QX_Tongue_2_2.SM_QX_Tongue_2_2"},
+        {&qxSec[3][0], L"/Game/ECUTuning/Flames/SM_QX_Tongue_3_0.SM_QX_Tongue_3_0"},
+        {&qxSec[3][1], L"/Game/ECUTuning/Flames/SM_QX_Tongue_3_1.SM_QX_Tongue_3_1"},
+        {&qxSec[3][2], L"/Game/ECUTuning/Flames/SM_QX_Tongue_3_2.SM_QX_Tongue_3_2"},
+        {&qxSec[4][0], L"/Game/ECUTuning/Flames/SM_QX_Tongue_4_0.SM_QX_Tongue_4_0"},
+        {&qxSec[4][1], L"/Game/ECUTuning/Flames/SM_QX_Tongue_4_1.SM_QX_Tongue_4_1"},
+        {&qxSec[4][2], L"/Game/ECUTuning/Flames/SM_QX_Tongue_4_2.SM_QX_Tongue_4_2"},
+        {&qxSec[5][0], L"/Game/ECUTuning/Flames/SM_QX_Tongue_5_0.SM_QX_Tongue_5_0"},
+        {&qxSec[5][1], L"/Game/ECUTuning/Flames/SM_QX_Tongue_5_1.SM_QX_Tongue_5_1"},
+        {&qxSec[5][2], L"/Game/ECUTuning/Flames/SM_QX_Tongue_5_2.SM_QX_Tongue_5_2"},
     };
     bool collected = false;
     for (auto& h : held) {
