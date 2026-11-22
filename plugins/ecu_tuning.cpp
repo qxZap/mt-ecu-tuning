@@ -1549,8 +1549,8 @@ static void flameClassic(uintptr_t v, Car& car, int i, const Tune& t, double ene
     s.layers = s.lod < 0.6 || lowFx ? 2 : 2 + (int)(s.detail * 3);
     if (s.layers > MAX_LAYERS) s.layers = MAX_LAYERS;
     for (int c = 0; c < s.layers; c++)
-        if (!alive(s.cone[c])) {  // the core (1) stays the opaque cone; the see-through layers are flame tongues when shipped
-            bool qx = c != 1 && qxTongue[0];
+        if (!alive(s.cone[c])) {  // every layer a flame tongue when shipped, the core (1) too: it is most of what shows (11-22)
+            bool qx = qxTongue[0] != 0;
             s.cone[c] = refOf(makeMesh(v, qx ? qxTongue[c % 6] : cone, c == 1 ? glow : qx ? qxMat : layer(), pipe, 1, 0.5f, 0.1f));
             s.coneMid[c] = lastMid;
         }
@@ -1684,9 +1684,11 @@ static void tickClassic(DWORD now, double dt) {
                     double inner = 0.55 + 0.45 * o, length = s.coneLength * inner * shape * (0.85 + 0.3 * roll()), half = length * 50;
                     double along = 0.02 + 0.28 * o + u * 0.6 + (c > 1 ? 0.1 * s.detail * sin(t * 9 + c * 1.7 + s.phase[c % 3]) : 0);
                     Vec at{s.pipe.at.x + s.dir.x * half, s.pipe.at.y + s.dir.y * half, s.pipe.at.z + s.dir.z * half};
-                    heatColor(s.coneMid[c], s, along < 0 ? 0 : along > 1 ? 1 : along, 0.4 * o, c == 1 || !ghost ? -1 : (c == 0 ? 0.45 : 0.3) * shape);
+                    double a = qxTongue[0] ? (c == 1 ? 0.95 : c == 0 ? 0.5 : 0.35) * shape  // tongues: the core bright, the shell soft
+                             : c == 1 || !ghost ? -1 : (c == 0 ? 0.45 : 0.3) * shape;
+                    heatColor(s.coneMid[c], s, along < 0 ? 0 : along > 1 ? 1 : along, 0.4 * o, a);
                     placeSeg(s.cone[c], at, s.dir, s.size * 0.22 * inner, length);
-                    if (qxTongue[0] && c != 1 && (frame + c) % 4 == 0) {  // the tongue changes shape: it flickers
+                    if (qxTongue[0] && (frame + c) % 4 == 0) {  // the tongue changes shape: it flickers
                         unsigned char m[0x10] = {0};
                         memcpy(m, &qxTongue[(frame / 4 + c * 2 + rand()) % 6], 8);
                         api->process_event(s.cone[c].ptr, fMesh, m);
@@ -2703,6 +2705,20 @@ static void dynoDraw(uintptr_t vehicle) {
     memcpy(a, &engine, 8);
     api->process_event(panel.dyno, fDynoEngine, a);
 }
+// Its plot fills its canvas, and in the rows' list that is next to nothing: the plot gets a height of its own instead,
+// full width (anchors stretched across, offsets 0 at the sides).
+enum { DYNO_HEIGHT = 560 };
+static void dynoSize(uintptr_t dyno, float height) {
+    static uintptr_t cDynoNative = api->find_object("Class", "DynoWidget", "/Script/MotorTown"), cWidget = api->find_object("Class", "Widget", "/Script/UMG");
+    static uintptr_t fAnch = api->find_object("Function", "SetAnchors", "CanvasPanelSlot"), fOffs = api->find_object("Function", "SetOffsets", "CanvasPanelSlot");
+    static int oPlot = cDynoNative ? off(cDynoNative, "Plot") : -1, oSlot = cWidget ? off(cWidget, "Slot") : -1;
+    uintptr_t plot = dyno && oPlot >= 0 ? get<uintptr_t>(dyno + oPlot) : 0, slot = plot && oSlot >= 0 ? get<uintptr_t>(plot + oSlot) : 0;
+    if (!slot || !fAnch || !fOffs) { MT_LOG("dyno sheet: its plot's slot not found -- it keeps the game's size"); return; }
+    struct { double minX, minY, maxX, maxY; } an{0, 0, 1, 0};  // FAnchors: across the top
+    unsigned char a[64] = {}; memcpy(a, &an, sizeof an); api->process_event(slot, fAnch, a);
+    float m[4] = {0, 0, 0, height};  // FMargin: left, top, right (stretched: a margin), bottom (a height)
+    unsigned char b[32] = {}; memcpy(b, m, sizeof m); api->process_event(slot, fOffs, b);
+}
 static void openRows(uintptr_t screen, uintptr_t box, const Tune& t, uintptr_t vehicle) {
     struct { int ret; } count = {0};
     api->process_event(box, fChildCount, &count);
@@ -2712,6 +2728,15 @@ static void openRows(uintptr_t screen, uintptr_t box, const Tune& t, uintptr_t v
         api->process_event(box, fChildAt, &at);
         if (at.ret) { setVisible(at.ret, false); panel.hidden.push_back(at.ret); }
     }
+    // the dyno sheet first, on top of the rows (the user, 11-22: "at the top ... way bigger")
+    if (!cDyno) {
+        cDyno = loadAsset(L"/Game/UI/InGame/Vehicle/EngineDynoGraphWidgetBP.EngineDynoGraphWidgetBP_C");
+        fDynoEngine = api->find_object("Function", "SetEngine", "DynoWidget");
+        MT_LOG("dyno sheet %s", cDyno && fDynoEngine ? "ready" : "not found -- no graph");
+    }
+    panel.dyno = cDyno && fDynoEngine && engineHas(vehicle) ? create(screen, cDyno, box) : 0;
+    dynoSize(panel.dyno, DYNO_HEIGHT);
+    dynoDraw(vehicle);
     for (int i = 0; i < NROWS; i++) {
         uintptr_t w = create(screen, cSetting, box);
         uintptr_t spin = w ? get<uintptr_t>(w + oRowSpin) : 0;
@@ -2738,13 +2763,6 @@ static void openRows(uintptr_t screen, uintptr_t box, const Tune& t, uintptr_t v
         panel.resetHeld = false;
         panel.resetFrames = 60;
     }
-    if (!cDyno) {
-        cDyno = loadAsset(L"/Game/UI/InGame/Vehicle/EngineDynoGraphWidgetBP.EngineDynoGraphWidgetBP_C");
-        fDynoEngine = api->find_object("Function", "SetEngine", "DynoWidget");
-        MT_LOG("dyno sheet %s", cDyno && fDynoEngine ? "ready" : "not found -- no graph");
-    }
-    panel.dyno = cDyno && fDynoEngine && engineHas(vehicle) ? create(screen, cDyno, box) : 0;
-    dynoDraw(vehicle);
     panel.open = true;
 }
 
