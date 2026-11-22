@@ -171,6 +171,8 @@ struct Panel {
     std::vector<uintptr_t> hidden;
     int64_t id;
     DWORD dirty;
+    uintptr_t dyno;   // the game's own dyno graph under the rows (11-22), redrawn after a change
+    DWORD dynoAt;
 };
 
 static Tune base;
@@ -190,6 +192,10 @@ static uintptr_t cFx, cSetting, cButton, cButtonBase, cText, cUButton, gameplayC
 static uintptr_t fLoc, fVelocity, fPawn, fRoot, fBounds, fSound, fSpawn, fSetFloat, fSetColor, fSetVec, fDilation, fStop, fToName, fPath, fRef, fLoad;
 static uintptr_t fCreate, fAddChild, fChildIndex, fChildAt, fChildCount, fToText, fSetText, fSetRich, fPressed, fRemove, fSetVis, fIsVisible, fPadding;
 static uintptr_t sound, cone, ball, glow, ghost, smoke, playerNow;
+// The 3D flame (11-22): six tongue meshes and their glowing material, in qxZap_ECUTuning_P (FlameModels/). They stand
+// in for the engine's cone in the Classic flame's see-through layers, laid out as it is; without the pak, the cone.
+static uintptr_t qxMat, qxTongue[6];
+static bool qxTried;
 static uint64_t colorName, opacityName, depthBiasName;
 // M_GhostCar is translucent and unlit, so layers of it read as a body of flame where the opaque
 // M_AttachmentLight is a flat silhouette. Without it everything falls back to the old look.
@@ -885,7 +891,7 @@ static uintptr_t makeMesh(uintptr_t v, uintptr_t mesh, uintptr_t mat, const Pipe
     api->process_event(c, fMakeMid, d);
     uintptr_t mid = 0;
     memcpy(&mid, d + off(fMakeMid, "ReturnValue"), 8);
-    if (mid && mat == ghost) {
+    if (mid && (mat == ghost || (qxMat && mat == qxMat))) {  // both take Color and Opacity
         struct { uint64_t name; float rgba[4]; } color = {colorName, {r * flameGain(), g * flameGain(), b * flameGain(), 1}};
         api->process_event(mid, fMidColor, &color);
         struct { uint64_t name; float value; } clear = {opacityName, 0};
@@ -1543,7 +1549,11 @@ static void flameClassic(uintptr_t v, Car& car, int i, const Tune& t, double ene
     s.layers = s.lod < 0.6 || lowFx ? 2 : 2 + (int)(s.detail * 3);
     if (s.layers > MAX_LAYERS) s.layers = MAX_LAYERS;
     for (int c = 0; c < s.layers; c++)
-        if (!alive(s.cone[c])) { s.cone[c] = refOf(makeMesh(v, cone, c == 1 ? glow : layer(), pipe, 1, 0.5f, 0.1f)); s.coneMid[c] = lastMid; }
+        if (!alive(s.cone[c])) {  // the core (1) stays the opaque cone; the see-through layers are flame tongues when shipped
+            bool qx = c != 1 && qxTongue[0];
+            s.cone[c] = refOf(makeMesh(v, qx ? qxTongue[c % 6] : cone, c == 1 ? glow : qx ? qxMat : layer(), pipe, 1, 0.5f, 0.1f));
+            s.coneMid[c] = lastMid;
+        }
     s.glow = canGlow ? lightSpot(car, i, s.lightAt) : 0;
     if (s.glow > 0 && !alive(s.light)) s.light = refOf(makeLight(v, 150 + 700 * s.size));
     // The rows are relative to their defaults (length 0.04, spread 0.2, size 0.2), so each one
@@ -1676,6 +1686,11 @@ static void tickClassic(DWORD now, double dt) {
                     Vec at{s.pipe.at.x + s.dir.x * half, s.pipe.at.y + s.dir.y * half, s.pipe.at.z + s.dir.z * half};
                     heatColor(s.coneMid[c], s, along < 0 ? 0 : along > 1 ? 1 : along, 0.4 * o, c == 1 || !ghost ? -1 : (c == 0 ? 0.45 : 0.3) * shape);
                     placeSeg(s.cone[c], at, s.dir, s.size * 0.22 * inner, length);
+                    if (qxTongue[0] && c != 1 && (frame + c) % 4 == 0) {  // the tongue changes shape: it flickers
+                        unsigned char m[0x10] = {0};
+                        memcpy(m, &qxTongue[(frame / 4 + c * 2 + rand()) % 6], 8);
+                        api->process_event(s.cone[c].ptr, fMesh, m);
+                    }
                 }
                 if (s.style != 1) s.debt += 70 * s.dense * s.lod * (0.5 + s.energy) * dt;
                 for (size_t i = 0; i < s.sparks.size() && s.debt >= 1; i++) {
@@ -2123,6 +2138,17 @@ static double above0(double x) { return x > 0 ? x : 0; }
 
 // A blocking load, so on a light or a burn and never while a world is loading.
 static bool flameAssets() {
+    if (!qxTried) {
+        qxTried = true;
+        qxMat = loadAsset(L"/Game/ECUTuning/Flames/M_QX_Flame.M_QX_Flame");
+        for (int n = 0; n < 6 && qxMat; n++) {
+            wchar_t path[96];
+            swprintf_s(path, L"/Game/ECUTuning/Flames/SM_QX_Tongue_%d.SM_QX_Tongue_%d", n, n);
+            qxTongue[n] = loadAsset(path);
+        }
+        if (!qxTongue[5]) qxTongue[0] = 0;  // all six or none
+        MT_LOG("3D flames %s", qxTongue[0] ? "on" : "not found (qxZap_ECUTuning_P) -- cones");
+    }
     if (sound && ball && glow && cone && (ghost || ghostTried)) return true;
     sound = loadAsset(L"/Game/Cars/Parts/Engine/Sound/Backfire/SC_Backfire.SC_Backfire");
     cone = loadAsset(L"/Engine/BasicShapes/Cone.Cone");
@@ -2667,6 +2693,16 @@ static void saveTune(int64_t id, const Tune& t) {
     }
 }
 
+// The dyno sheet (the user, 11-22): the parts shop's own graph, EngineDynoGraphWidgetBP (DynoWidget.SetEngine), under
+// the ECU rows and pointed at this car's engine, so the curve shows what the tune does.
+static uintptr_t cDyno, fDynoEngine;
+static void dynoDraw(uintptr_t vehicle) {
+    uintptr_t engine = vehicle ? get<uintptr_t>(vehicle + oEngine) : 0;
+    if (!panel.dyno || !fDynoEngine || !engine) return;
+    unsigned char a[0x10] = {0};
+    memcpy(a, &engine, 8);
+    api->process_event(panel.dyno, fDynoEngine, a);
+}
 static void openRows(uintptr_t screen, uintptr_t box, const Tune& t, uintptr_t vehicle) {
     struct { int ret; } count = {0};
     api->process_event(box, fChildCount, &count);
@@ -2702,6 +2738,13 @@ static void openRows(uintptr_t screen, uintptr_t box, const Tune& t, uintptr_t v
         panel.resetHeld = false;
         panel.resetFrames = 60;
     }
+    if (!cDyno) {
+        cDyno = loadAsset(L"/Game/UI/InGame/Vehicle/EngineDynoGraphWidgetBP.EngineDynoGraphWidgetBP_C");
+        fDynoEngine = api->find_object("Function", "SetEngine", "DynoWidget");
+        MT_LOG("dyno sheet %s", cDyno && fDynoEngine ? "ready" : "not found -- no graph");
+    }
+    panel.dyno = cDyno && fDynoEngine && engineHas(vehicle) ? create(screen, cDyno, box) : 0;
+    dynoDraw(vehicle);
     panel.open = true;
 }
 
@@ -2709,7 +2752,8 @@ static void closeRows() {
     for (auto& r : panel.rows)
         if (r.widget) api->process_event(r.widget, fRemove, nullptr);
     if (panel.reset) api->process_event(panel.reset, fRemove, nullptr);
-    panel.reset = 0;
+    if (panel.dyno) api->process_event(panel.dyno, fRemove, nullptr);
+    panel.reset = 0; panel.dyno = 0; panel.dynoAt = 0;
     for (uintptr_t w : panel.hidden) setVisible(w, true);
     panel.hidden.clear();
     memset(panel.rows, 0, sizeof panel.rows);
@@ -2783,10 +2827,11 @@ static void tickPanel(DWORD now) {
     revWithH(vehicle, panel.open);
     if (panel.open) {
         if (childIndex(box, panel.rows[0].widget) < 0) {  // the game rebuilt the list and our rows with it
-            panel.open = false; panel.button = 0; panel.reset = 0; panel.hidden.clear();
+            panel.open = false; panel.button = 0; panel.reset = 0; panel.dyno = 0; panel.dynoAt = 0; panel.hidden.clear();
                     memset(panel.rows, 0, sizeof panel.rows);
             return;
         }
+        if (panel.dynoAt && (int)(now - panel.dynoAt) >= 0) { panel.dynoAt = 0; dynoDraw(vehicle); }
         if (panel.reset && childIndex(box, panel.reset) >= 0) {
             if (panel.resetFrames > 0) { panel.resetFrames--; labelBlocks(panel.reset, L"Reset to default"); }
             if (clicked(panel.resetInner, panel.resetHeld)) {
@@ -2799,6 +2844,7 @@ static void tickPanel(DWORD now) {
                     if (!textRow(ROWS[i].kind) && spinSet) spinSet(panel.rows[i].spin, (float)toSpin(i, t));
                     showRow(i, t);
                 }
+                panel.dynoAt = now + 400;
                 MT_LOG("tune reset to default for vehicle %lld", (long long)id);
                 return;
             }
@@ -2829,6 +2875,7 @@ static void tickPanel(DWORD now) {
                 }
             t.own = true;
             panel.dirty = now;
+            panel.dynoAt = now + 400;  // once the engine has the new trims
             showRow(i, t);
         }
         return;
@@ -2893,6 +2940,13 @@ static void keepLoaded() {
         {&waves[5], L"/Game/Cars/Parts/Engine/Sound/Backfire/Backfire_06.Backfire_06"},
         {&booms[0], L"/Game/Sounds/Fireworks/FireworkBurst_01.FireworkBurst_01"},
         {&booms[1], L"/Game/Sounds/Fireworks/FireworkBurst_02.FireworkBurst_02"},
+        {&qxMat, L"/Game/ECUTuning/Flames/M_QX_Flame.M_QX_Flame"},
+        {&qxTongue[0], L"/Game/ECUTuning/Flames/SM_QX_Tongue_0.SM_QX_Tongue_0"},
+        {&qxTongue[1], L"/Game/ECUTuning/Flames/SM_QX_Tongue_1.SM_QX_Tongue_1"},
+        {&qxTongue[2], L"/Game/ECUTuning/Flames/SM_QX_Tongue_2.SM_QX_Tongue_2"},
+        {&qxTongue[3], L"/Game/ECUTuning/Flames/SM_QX_Tongue_3.SM_QX_Tongue_3"},
+        {&qxTongue[4], L"/Game/ECUTuning/Flames/SM_QX_Tongue_4.SM_QX_Tongue_4"},
+        {&qxTongue[5], L"/Game/ECUTuning/Flames/SM_QX_Tongue_5.SM_QX_Tongue_5"},
     };
     bool collected = false;
     for (auto& h : held) {
