@@ -35,7 +35,7 @@
 // Everything is this client's alone: no table or asset changes, so nothing to mismatch
 // with a server, and other players do not see your settings.
 //
-// Shutting the throttle on a turbo plays its release, the stu-tu-tu (see flutterOf). The shot is
+// Shutting the throttle on a turbo plays its release, the stu-tu-tu (see flutterOf), bigger with the boost slider. The shot is
 // QX_Flutter_Shot, shipped (with the supercharger whine SW_QX_BlowerWhine) in the ECU Tuning pak, qxZap_ECUTuning_P,
 // under Sounds/, which the server paks drop. Without the pak the plugin runs, plays no flutter, and the whine falls back
 // to Teh's hellcathigh if that pack is in.
@@ -2016,6 +2016,9 @@ static void queueFlutter(uintptr_t v, const Tune& t, double push, DWORD now) {
     }
     holdFlutter(v);
     Flutter f = flutterOf(key);
+    // the ECU's boost slider (0.5 = stock): more pressure dumped, a louder, longer, slightly higher stu-tu-tu (11-22)
+    double bp = fmin(1, fmax(-1, (t.boost - 0.5) * 2));
+    f.volume *= 1 + 0.5 * bp; f.pitch *= 1 + 0.04 * bp; f.shots = (int)fmax(1, f.shots + (int)lround(2 * bp));
     for (int voice = 0; voice < f.turbos; voice++) {
         double detune = 1 + voice * 0.035 * (voice % 2 ? 1 : -1);
         DWORD when = now + voice * 17, gap = f.gap;
@@ -2030,7 +2033,7 @@ static void queueFlutter(uintptr_t v, const Tune& t, double push, DWORD now) {
     }
     if (flutterLogged < 300) {
         flutterLogged++;
-        MT_LOG("flutter %s: spool %.2f, pitch %.2f, %d voices", key.c_str(), push, f.pitch, f.turbos);
+        MT_LOG("flutter %s: spool %.2f, boost %+.2f, pitch %.2f, %d voices", key.c_str(), push, bp, f.pitch, f.turbos);
     }
 }
 
