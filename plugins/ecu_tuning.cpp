@@ -2016,11 +2016,11 @@ static void queueFlutter(uintptr_t v, const Tune& t, double push, DWORD now) {
     }
     holdFlutter(v);
     Flutter f = flutterOf(key);
-    // the ECU's boost slider (0.5 = stock): more pressure dumped, a louder, longer, slightly higher stu-tu-tu; at 0 there
-    // is no boost to dump and no flutter at all (the user, 11-22). Volume: 0 at 0, stock at 0.5, x1.5 at the top.
-    double bp = fmin(1, fmax(-1, (t.boost - 0.5) * 2));
-    if (t.boost <= 0.01) return;
-    f.volume *= bp < 0 ? 1 + bp : 1 + 0.5 * bp; f.pitch *= 1 + 0.04 * bp; f.shots = (int)fmax(1, f.shots + (int)lround(2 * bp));
+    // the ECU's boost slider: the flutter is the extra pressure dumped, so none up to stock (0.5) and full at the top,
+    // in a straight line between (the user, 11-22, after hearing the 0..1.5 version)
+    double bp = fmin(1, fmax(0, (t.boost - 0.5) * 2));
+    if (bp <= 0.01) return;
+    f.volume *= bp; f.pitch *= 1 + 0.04 * bp; f.shots = (int)fmax(1, lround(f.shots * (0.5 + 0.5 * bp)));
     for (int voice = 0; voice < f.turbos; voice++) {
         double detune = 1 + voice * 0.035 * (voice % 2 ? 1 : -1);
         DWORD when = now + voice * 17, gap = f.gap;
