@@ -1311,6 +1311,16 @@ static int shapePieces(const Slot& s, double u, double time, double L, double W,
     return made;
 }
 
+// A flame piece is a 3D tongue when they shipped (every shape: most bursts are Pulses and Fan, not Classic -- 11-22),
+// else the sphere. Same pivot and size at scale 1, so the shapes place them as they did the sphere.
+static uintptr_t pieceMesh(int k) { return qxTongue[0] ? qxTongue[k % 6] : ball; }
+static uintptr_t pieceMat() { return qxTongue[0] ? qxMat : layer(); }
+static void flicker(const Ref& r, unsigned frame, int k) {  // the tongue changes shape every 4 frames
+    if (!qxTongue[0] || (frame + k) % 4 != 0 || !alive(r)) return;
+    unsigned char m[0x10] = {0};
+    memcpy(m, &qxTongue[(frame / 4 + k * 2 + rand()) % 6], 8);
+    api->process_event(r.ptr, fMesh, m);
+}
 static void drawShape(Slot& s, double u, double time, double L, double fade, unsigned frame, unsigned every, int& budget) {
     Piece pieces[POOL];
     double W = (s.pipe.radius * 2 > 6 ? s.pipe.radius * 2 : 6) * s.size / 0.21 * (0.8 + 0.4 * s.energy);
@@ -1322,7 +1332,7 @@ static void drawShape(Slot& s, double u, double time, double L, double fade, uns
         if (!alive(g.seg[c])) {
             if (budget <= 0) continue;
             budget--;
-            g.seg[c] = refOf(makeMesh(s.owner.ptr, ball, layer(), s.pipe, 1, 0.5f, 0.1f));
+            g.seg[c] = refOf(makeMesh(s.owner.ptr, pieceMesh(e), pieceMat(), s.pipe, 1, 0.5f, 0.1f));
             g.mid[c] = lastMid;
             g.vis[c] = false;
             if (!g.seg[c].ptr) continue;
@@ -1330,6 +1340,7 @@ static void drawShape(Slot& s, double u, double time, double L, double fade, uns
         if (!g.vis[c]) { if (showBudget <= 0) continue; showBudget--; }
         const Piece& q = pieces[e];
         placePiece(s, g.seg[c], q.at, q.d, q.width / 100, q.length / 100);
+        flicker(g.seg[c], frame, e);
         g.parked[c] = false;
         if ((frame + e) % every == 0 || !g.vis[c]) {
             float rgb[3];
@@ -1474,7 +1485,7 @@ static void tickFlames(DWORD now, double dt) {
                     if (!alive(g.seg[c])) {
                         if (budget <= 0) continue;
                         budget--;
-                        g.seg[c] = refOf(makeMesh(s.owner.ptr, ball, layer(), s.pipe, 1, 0.5f, 0.1f));
+                        g.seg[c] = refOf(makeMesh(s.owner.ptr, pieceMesh(j * MAX_SEGS + c), pieceMat(), s.pipe, 1, 0.5f, 0.1f));
                         g.mid[c] = lastMid;
                         g.vis[c] = false;
                         if (!g.seg[c].ptr) continue;
@@ -1490,6 +1501,7 @@ static void tickFlames(DWORD now, double dt) {
                     double mouth = (s.pipe.radius * 2 > 6 ? s.pipe.radius * 2 : 6) * s.size / 0.21;
                     double width = mouth * g.width * (1 - 0.8 * pow(am, 0.7)) * (0.8 + 0.4 * s.energy) * (0.6 + 0.4 * fade);
                     placePiece(s, g.seg[c], {(p0.x + p1.x) / 2, (p0.y + p1.y) / 2, (p0.z + p1.z) / 2}, {d.x / len, d.y / len, d.z / len}, width / 100, len * 1.35 / 100);
+                    flicker(g.seg[c], frame, j * MAX_SEGS + c);
                     g.parked[c] = false;
                     if ((frame + j * 3 + c) % every == 0 || !g.vis[c]) {
                         float rgb[3];
